@@ -48,13 +48,18 @@ library(ggplot2)
         
 5. Need to create log of what day calibration parameter changed, how many parameters were created for any given monitor, and what they were
     5.i. Create separate CSV logging these values for each monitor
-  
-    
+
+_Assumption Checking_ (Miskell et al. 2018)
+1. Sensor data are a linear transformation of true data
+2. Frequency distribution of site and proxy data have similar functional form over suitable time period
+3. 
+
+_Drift Detection_
 ```{r}
 ### DOWNLOAD PROXY DATA
 # Get last three days of regulatory data  near Richmond
-end_date <- Sys.Date()-1 #Yesterday
-start_date <- Sys.Date()-3 #Three days ago
+end_date <- Sys.Date()-2 #Yesterday
+start_date <- Sys.Date()-4 #Three days ago
 
 request_url = paste0('http://www.airnowapi.org/aq/data/?startDate=', start_date, 'T00&endDate=', end_date, 'T23&parameters=OZONE,PM25,NO2&BBOX=-122.720038,37.701918,-121.965229,38.126622&dataType=C&format=application/json&verbose=0&nowcastonly=0&includerawconcentrations=1&API_KEY=C05358E3-5508-4216-A03E-E229E0368B7E') # Set URL to request data from last three days from AirNow API ## DATES NEEDED AS FUNCTION INPUT HERE
 request_call <- GET(url = request_url) #Request data from API
@@ -63,18 +68,24 @@ request_json <- content(request_call, as = 'text', type = NULL, encoding = 'UTF-
 request_df <- fromJSON(request_json, simplifyDataFrame = TRUE) # Parse JSON to dataframe
 
 # Filter to O3 and join with station names, filter to San Pablo
-regulatory_stations <- read.csv('shapefiles/monitor_shp_named.csv') %>% select(-X) %>% rename('station'='monitor_names') # Read in names of each regulatory station near Richmond
-regulatory_all <- inner_join(request_df, regulatory_stations, by = c('Latitude'='monitor_lat', 'Longitude'='monitor_long')) # Join station names with data by lat/long
-sp_O3 <- filter(regulatory_all, Parameter == 'OZONE' & station == 'San Pablo') # Filter to pollutant and station of interest - can include others if we wish ## FUNCTION INPUT
-sp_O3$RawConcentration <- ifelse(sp_O3$RawConcentration == -999, sp_O3$Value, sp_O3$RawConcentration) # If no raw concentration available, use rounded value from 'Value' col
-sp_O3$time_stamp <- as_datetime(paste(substr(sp_O3$UTC, 1, 10), substr(sp_O3$UTC, 12, 16), ':00')) # Get time into standardized format
+reg_names <- read.csv('shapefiles/monitor_shp_named.csv') %>% select(-X) %>% rename('station'='monitor_names') # Read in names of each regulatory station near Richmond
+reg_data <- inner_join(request_df, reg_names, by = c('Latitude'='monitor_lat', 'Longitude'='monitor_long')) # Join station names with data by lat/long
+
+reg_data$RawConcentration <- ifelse(reg_data$RawConcentration == -999, reg_data$Value, reg_data$RawConcentration) # If raw concentration unavailable, use rounded value from "value" field
+reg_data$time_stamp <- as_datetime(paste(substr(reg_data$UTC, 1, 10), substr(reg_data$UTC, 12, 16), ':00'))
+
+sp_O3 <- filter(reg_data, Parameter == 'OZONE' & station == 'San Pablo') # Filter to pollutant and station of interest 
+bk_O3 <- filter(reg_data, Parameter == 'OZONE' & station == 'Berkeley')
 ```
 
-### READ IN PSE MINUTE DATA FROM DAY PRIOR
 For now we will average the minute data into sixty minute increments for more comparable sample size to proxy data - do we have access to better temporal granularity for proxy data?
 ```{r}
+### READ IN PSE DATA FROM DAY PRIOR
 aqy_data_full <- read.csv(paste0('test_data/AQY_June', '.CSV'), stringsAsFactors = F) # Read in our air data ## DATES AS INPUTS
 aqy_cal_params <- read.csv('calParams_sac.csv') # Read in present calibration parameters
+
+### DELETE THIS LINE LATER - testing with two closest to SP Station (first two) and two that are closer to Berkeley than SP
+aqy_data_full <- aqy_data_full %>% filter(ID %in% c('AQY BB-635', 'AQY BB-640', 'AQY BB-793', 'AQY BB-648'))
 
 #Filtering to last three days
 aqy_data_full$time_stamp <- as_datetime(aqy_data_full$Time) # Get timestamp into standard format
@@ -87,27 +98,6 @@ aqy_data_cal$O3_cal <- (aqy_data_cal$O3-aqy_data_cal$O3.offset)*aqy_data_cal$O3.
 # Generating list of AQYs
 aqy_list <- as.data.frame(unique(aqy_data_cal$Monitor.ID)) # Generate list of AQY instruments with measurements in time frame
 colnames(aqy_list) <- 'Monitor.ID'
-
-# Filtering to one AQY
-aqy_O3 <- filter(aqy_data_cal, Monitor.ID == aqy_list[1,1]) # Select AQY of interest ## WILL NEED TO ITERATE HERE - SUBSEQUENT STEPS NESTED IN FOR LOOP
-
-#Averaging by hour
-aqy_O3$day_hour <- paste(day(aqy_O3$Time), hour(aqy_O3$Time)) # Generate column with unique ID for day/hour
-aqy_O3_60 <- group_by(aqy_O3, Monitor.ID, day_hour) %>% summarize(O3 = mean(O3_cal)) # Group by day/hour and take average of minute measurements
-```
-
-```{r}
-### COMPARE DISTRIBUTIONS VISUALLY
-var_aqy <- var(aqy_O3_60$O3) # Variance AQY data
-var_sp <- var(sp_O3$RawConcentration) # Variance regulatory data
-print(paste('AQY variance:', var_aqy, '|', 'Regulatory Variance:', var_sp))
-
-mean_aqy <- mean(aqy_O3_60$O3) # Mean AQY data
-mean_sp <- mean(sp_O3$RawConcentration) # Mean regulatory data
-
-ggplot() + geom_bar(data = sp_O3, aes(x = RawConcentration), binwidth = 1, alpha = 1) + geom_bar(data = aqy_O3_60, aes(x = O3), binwidth = 1, alpha = .5, fill = 'red') +
-  ggtitle(paste('Proxy Data (black) & AQY Data (red)\n', start_date, 'to', end_date)) + xlab('\nConcentration O3 (ppb)') + ylab('72-Hour Count of Measurements \n') +
-  theme(plot.title = element_text(hjust = .5, face = 'bold'), axis.title = element_text(size = 9, face = 'italic')) # Plot distributions of each dataset superimposed
 ```
 
 Miskell et al. 2016 indicates:
@@ -115,49 +105,77 @@ slope = sqrt(variance_proxy/variance_aqy)
 offset = mean_aqy-mean_proxy*sqrt(variance_proxy/variance_aqy)
 
 Says drift has occurred if 0.7 < slope < 1.3 or -5 < offset < 5 ??Are the greater than/less than signs flipped??
+
 ```{r}
 ### GENERATE FLAGS
-## Initialize blank columns for flags
-aqy_flags <- mutate(aqy_list, flag_KS_now = 0, flag_slope_now = 0, flag_offset_now = 0)
+# Initialize dataframe of today's flags
+todays_flags <- mutate(aqy_list, flag_KS_now = 0, flag_slope_now = 0, flag_offset_now = 0)
 
-## Flag via KS test
-ks_results <- ks.test(sp_O3$RawConcentration, aqy_O3_60$O3, alternative = 'two.sided') # Kolmogorov-Smirnov test to check whether distributions are different
+# Initialize dataframe of today's test results
+todays_results <- mutate(aqy_list, start_72hr = start_date, end_72hr = end_date, ks_pval = NA, offset = NA, slope = NA)
 
-aqy_flags$flag_KS_now[1] <- ifelse(ks_results$p.value <= 0.05, 1, 0) #If p-value less than 0.05 add flag, else flag = 0
+i <- 1
 
-## Flag via slope drift
-manual_slope <- sqrt(var_sp/var_aqy)
-aqy_flags$flag_slope_now[1] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0) # Assign flag if manual slope outside bounds, else flag = 0
+while(i <= nrow(aqy_list)){
+  aqy_O3 <- filter(aqy_data_cal, Monitor.ID == aqy_list[i,1]) # Select AQY of interest
+  aqy_ID <- unique(aqy_O3$Monitor.ID) # Get monitor ID we're working with
+  
+  #Averaging by hour
+  aqy_O3$day_hour <- paste(day(aqy_O3$Time), hour(aqy_O3$Time)) # Generate column with unique ID for day/hour
+  aqy_O3_60 <- group_by(aqy_O3, Monitor.ID, day_hour) %>% summarize(O3 = mean(O3_cal)) # Group by day/hour and take average of minute measurements
+  
+  ## Flag via KS test
+  ks_results_bk <- ks.test(bk_O3$RawConcentration, aqy_O3_60$O3, alternative = 'two.sided') # Compare distribution to Berkeley Marina
+  ks_results_sp <- ks.test(sp_O3$RawConcentration, aqy_O3_60$O3, alternative = 'two.sided') # Compare distribution to San Pablo
+  
+  ks_p <- ifelse(aqy_ID == 'AQY BB-793' | aqy_ID == 'AQY BB-648', ks_results_bk$p.value, ks_results_sp$p.value) # If closer to Berkeley Marina, use that p-value
+  
+  todays_results$ks_pval[i] <- 
+  todays_flags$flag_KS_now[i] <- ifelse(ks_p <= 0.05, 1, 0) #If p-value less than 0.05 add flag, else flag = 0
+  
+  ## Flag via mean and variance
+  var_aqy <- var(aqy_O3_60$O3) # Variance AQY data
+  var_sp <- var(sp_O3$RawConcentration) # Variance regulatory data
 
-## Flag via offset drift
-manual_offset <- (mean_aqy-mean_sp)*sqrt(var_sp/var_aqy)
-aqy_flags$flag_offset_now[1] <- ifelse(manual_offset > 5 | manual_offset < 5, 1, 0) # Assign flag if manual offset outside bounds, else flag = 0
-
-## Print parameters
-print(paste('KS P-VALUE:', ks_results$p.value, '| MANUAL SLOPE:', manual_slope, '| MANUAL OFFSET:', manual_offset))
-aqy_flags[1,]
+  mean_aqy <- mean(aqy_O3_60$O3) # Mean AQY data
+  mean_sp <- mean(sp_O3$RawConcentration) # Mean regulatory data
+  
+  # Flag via slope drift
+  manual_slope <- sqrt(var_sp/var_aqy)
+  todays_results$slope[i] <- manual_slope
+  todays_flags$flag_slope_now[i] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0) # Assign flag if manual slope outside bounds, else flag = 0
+  
+  # Flag via offset drift
+  manual_offset <- (mean_aqy-mean_sp)*sqrt(var_sp/var_aqy)
+  todays_results$offset[i] <- manual_offset
+  todays_flags$flag_offset_now[i] <- ifelse(manual_offset > 5 | manual_offset < 5, 1, 0) # Assign flag if manual offset outside bounds, else flag = 0
+  
+  ## Print parameters
+  print(paste('KS P-VALUE:', ks_results$p.value, '| MANUAL SLOPE:', manual_slope, '| MANUAL OFFSET:', manual_offset))
+  i <- i + 1
+}
 ```
 
 ```{r}
+# LOG KS TEST RESULTS, SLOPE, AND OFFSET DAILY
+flag_params <- read.csv('results/flag_parameters.csv', header = T)
+
 ### COMBINE WITH PREVIOUS FLAGS
-running_flags <- read.csv('results/running_flags.csv') %>% inner_join(., aqy_flags, by = 'Monitor.ID') #Combine running flags with today's flags
+running_flags <- read.csv('results/running_flags.csv') %>% full_join(., todays_flags, by = 'Monitor.ID') #Combine running flags with today's flags
 
 running_flags <- mutate(running_flags, #If today's flag = 0, cumulative flag resets to zero - if today's flag = 1, add to previous cumulative total
        flag_KS_run = ifelse(flag_KS_now == 0, 0, flag_KS_run + flag_KS_now),
        flag_slope_run = ifelse(flag_slope_now == 0, 0, flag_slope_run + flag_slope_now),
        flag_offset_run = ifelse(flag_offset_now == 0, 0, flag_offset_run + flag_offset_now))
 
-#write.csv('results/running_flags.csv')
+#write.csv('results/running_flags.csv') #Write the new running flags to csv
 ```
 
 ```{r}
-### RECALIBRATE IF FLAG REACHES FIVE
+#read.csv('results/running_flags.csv') # Read in running flags
+
+
 ```
-
-
-
-
-
 
 
 
