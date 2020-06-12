@@ -53,10 +53,8 @@ library(ggplot2)
 ```{r}
 ### DOWNLOAD PROXY DATA
 # Get last three days of regulatory data  near Richmond
-#end_date <- Sys.Date()-1 #Yesterday
-#start_date <- Sys.Date()-3 #Three days ago
-start_date <- '2019-12-10'
-end_date <- '2019-12-12'
+end_date <- Sys.Date()-1 #Yesterday
+start_date <- Sys.Date()-3 #Three days ago
 
 request_url = paste0('http://www.airnowapi.org/aq/data/?startDate=', start_date, 'T00&endDate=', end_date, 'T23&parameters=OZONE,PM25,NO2&BBOX=-122.720038,37.701918,-121.965229,38.126622&dataType=C&format=application/json&verbose=0&nowcastonly=0&includerawconcentrations=1&API_KEY=C05358E3-5508-4216-A03E-E229E0368B7E') # Set URL to request data from last three days from AirNow API ## DATES NEEDED AS FUNCTION INPUT HERE
 request_call <- GET(url = request_url) #Request data from API
@@ -75,7 +73,7 @@ sp_O3$time_stamp <- as_datetime(paste(substr(sp_O3$UTC, 1, 10), substr(sp_O3$UTC
 ### READ IN PSE MINUTE DATA FROM DAY PRIOR
 For now we will average the minute data into sixty minute increments for more comparable sample size to proxy data - do we have access to better temporal granularity for proxy data?
 ```{r}
-aqy_data_full <- read.csv(paste0('test_data/PSE_AQY_minute_2019-12-06_', '2020-06-10', '.CSV'), stringsAsFactors = F) # Read in our air data
+aqy_data_full <- read.csv(paste0('test_data/AQY_June', '.CSV'), stringsAsFactors = F) # Read in our air data ## DATES AS INPUTS
 aqy_cal_params <- read.csv('calParams_sac.csv') # Read in present calibration parameters
 
 #Filtering to last three days
@@ -120,20 +118,20 @@ Says drift has occurred if 0.7 < slope < 1.3 or -5 < offset < 5 ??Are the greate
 ```{r}
 ### GENERATE FLAGS
 ## Initialize blank columns for flags
-aqy_flags <- mutate(aqy_list, flag_KS = 0, flag_slope = 0, flag_offset = 0)
+aqy_flags <- mutate(aqy_list, flag_KS_now = 0, flag_slope_now = 0, flag_offset_now = 0)
 
 ## Flag via KS test
 ks_results <- ks.test(sp_O3$RawConcentration, aqy_O3_60$O3, alternative = 'two.sided') # Kolmogorov-Smirnov test to check whether distributions are different
 
-aqy_flags$flag_KS[1] <- ifelse(ks_results$p.value <= 0.05, 1, 0) #If p-value less than 0.05, add flag
+aqy_flags$flag_KS_now[1] <- ifelse(ks_results$p.value <= 0.05, 1, 0) #If p-value less than 0.05 add flag, else flag = 0
 
 ## Flag via slope drift
 manual_slope <- sqrt(var_sp/var_aqy)
-aqy_flags$flag_slope[1] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0)
+aqy_flags$flag_slope_now[1] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0) # Assign flag if manual slope outside bounds, else flag = 0
 
 ## Flag via offset drift
 manual_offset <- (mean_aqy-mean_sp)*sqrt(var_sp/var_aqy)
-aqy_flags$flag_offset[1] <- ifelse(manual_offset > 5 | manual_offset < 5, 1, 0)
+aqy_flags$flag_offset_now[1] <- ifelse(manual_offset > 5 | manual_offset < 5, 1, 0) # Assign flag if manual offset outside bounds, else flag = 0
 
 ## Print parameters
 print(paste('KS P-VALUE:', ks_results$p.value, '| MANUAL SLOPE:', manual_slope, '| MANUAL OFFSET:', manual_offset))
@@ -141,12 +139,20 @@ aqy_flags[1,]
 ```
 
 ```{r}
-aqy_flags
+### COMBINE WITH PREVIOUS FLAGS
+running_flags <- read.csv('results/running_flags.csv') %>% inner_join(., aqy_flags, by = 'Monitor.ID') #Combine running flags with today's flags
+
+running_flags <- mutate(running_flags, #If today's flag = 0, cumulative flag resets to zero - if today's flag = 1, add to previous cumulative total
+       flag_KS_run = ifelse(flag_KS_now == 0, 0, flag_KS_run + flag_KS_now),
+       flag_slope_run = ifelse(flag_slope_now == 0, 0, flag_slope_run + flag_slope_now),
+       flag_offset_run = ifelse(flag_offset_now == 0, 0, flag_offset_run + flag_offset_now))
+
+#write.csv('results/running_flags.csv')
 ```
 
-
-
-
+```{r}
+### RECALIBRATE IF FLAG REACHES FIVE
+```
 
 
 
