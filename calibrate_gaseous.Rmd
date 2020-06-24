@@ -1,0 +1,284 @@
+---
+title: "Remote Network Calibration"
+author: "Audrey Smith"
+date: "6/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+```
+
+# RAMN_Calibration
+* This script reads in un-calibrated network data that has been pulled from the Aeroqual API via Python script
+* This script requires a proxy to calibrate our data. Bay Area regulatory data is pulled for these purposes. Very simple exploration is done for land use parameters, but for now the most proximate stations are generally assumed to be the best proxies. This assumption will be subject to further analysis at a later time.
+  -https://docs.airnowapi.org/Data/docs
+
+## The script is designed to:
+1. Read in daily, one-minute air quality monitoring data from Richmond Network, previously downloaded with Python script
+
+2. Call regulatory API and download data for monitoring stations nearest Richmond
+   API documentation: https://docs.airnowapi.org/
+   2.a. Each day, pull in just the previous day and append to a running log of proxy data
+
+3. Compare data to proxy data for drift detection
+3.a. Run Kolmogorov Smirnov test to compare three-day rolling average of each monitor to that of the BAAQMD data
+    3.a.i. A flag should be created for each time KS statistic goes below 0.05
+        3.a.ii. Create separate column for running count of flag
+
+3.b. Run deviance test to see if mean and variance of our data differ substantially with those of the proxy data
+    3.b.i. A separate flag should be created for each of these, with a running flag column 
+
+4. After five consecutive days of flags for any parameter, recalibrate data
+    4.a. Calibration uses mean and variance of our data, proxy data to create new slope and offset
+    4.b. Data should be re-calibrated back to first day of flag, using eight days of data for slope and offset calculation
+        
+5. Output - running log of calibration parameters (slope, offset, days valid) for each monitor for NO2 and O3
+
+Need to do assumption checking: (Miskell et al. 2018)
+1. Sensor data are a linear transformation of true data
+2. Frequency distribution of site and proxy data have similar functional form over suitable time period
+
+_Read in Data_
+```{r}
+### DOWNLOAD PROXY DATA ###
+# Determine which dates we already have versus which dates we need
+proxy_existing <- read.csv('proxy_data/proxy_data_all.csv', stringsAsFactors = F)
+existing_dates <- sort(unique(as_date(proxy_existing$timestamp)), decreasing = T)
+
+start_date <- existing_dates[1]+1 # First date needed is first date not in existing data
+end_date <- Sys.Date()-1 # Last date needed is yesterday
+
+# Request recent proxy data
+request_url = paste0('http://www.airnowapi.org/aq/data/?startDate=', start_date, 'T00&endDate=', end_date, 'T23&parameters=OZONE,PM25,NO2&BBOX=-122.720038,37.701918,-121.965229,38.126622&dataType=C&format=application/json&verbose=0&nowcastonly=0&includerawconcentrations=1&API_KEY=C05358E3-5508-4216-A03E-E229E0368B7E')
+ 
+request_call <- GET(url = request_url)
+stop_for_status(request_call)
+  
+request_json <- content(request_call, as = 'text', type = NULL, encoding = 'UTF-8')
+request_df <- arrange(fromJSON(request_json, simplifyDataFrame = TRUE), desc(UTC))
+
+# Join with station names and clean column names
+reg_names <- read.csv('spatial/monitor_shp_named.csv') %>% dplyr::select(-X)
+reg_data <- inner_join(request_df, reg_names, by = c('Latitude'='monitor_lat', 'Longitude'='monitor_long'))
+reg_data$timestamp <- as_datetime(paste(substr(reg_data$UTC, 1, 10), substr(reg_data$UTC, 12, 16), ':00'))
+requested_dates <- unique(as_date(reg_data$timestamp))
+
+reg_data <- dplyr::select(reg_data, -c(UTC)) %>% 
+  rename('lat'='Latitude', 'lon'='Longitude', 'modality'='Parameter', 'units'='Unit', 'value'='Value', 'original_value'='RawConcentration', 'installation_site_name' = 'monitor_names')
+
+# Append new data to existing data if not already included
+for(i in 1:length(requested_dates)){
+  if(requested_dates[i] %in% existing_dates){requested_dates <- c(requested_dates[-i])} # If date already included, remove from dates to append
+  else{requested_dates <- requested_dates} # If date not already included in proxy data, do nothing
+    }
+  
+proxy_new <- filter(reg_data, as_date(timestamp) %in% requested_dates) # Filter requested data to data not already in proxy data
+proxy_all <- as.data.frame(rbind(proxy_new, proxy_existing)) %>% arrange(desc(timestamp)) # Combine new proxy data with existing
+
+write.csv(reg_data, 'proxy_data/proxy_data_all.csv', row.names = F)
+
+### READ IN PSE DATA
+# PSE data
+aqy_data_full <- read.csv('test_data/PSE_AQY_2020-06-01_2020-06-23.csv', stringsAsFactors = F)
+aqy_data_full$timestamp <- as_datetime(aqy_data_full$Time)
+
+# Current calibration parameters
+cal_params_full <- read.csv('results/cal_params.csv', stringsAsFactors = F) %>% 
+  filter(!is.na(lat)) # Filter out undeployed monitors
+
+cal_params_full$start_date <- as.Date(cal_params_full$start_date, '%m/%d/%Y')
+cal_params_full$end_date <- as.Date(cal_params_full$end_date, '%m/%d/%Y')
+
+cal_params <- group_by(cal_params_full, ID) %>%  ## To reformat to JSON
+  mutate(most_recent = max(start_date)) %>% 
+  filter(start_date == most_recent) %>% 
+  dplyr::select(-most_recent) # Use most recent available parameter
+```
+
+_Ozone Drift Detection and Recalibration_
+```{r}
+### GENERATE FLAGS
+generate_flags <- function(start_72, end_72){
+  aqy_data <- filter(aqy_data_full, timestamp >= start_72 & timestamp <= end_72)
+  
+  #Calibrating using current parameters
+  aqy_data_cal <- inner_join(cal_params, aqy_data, by = 'ID') %>%
+    mutate(PM_cal = PM.gain*(PM2.5-PM.offset), # Calibrate PM
+           O3_cal = O3.gain*(O3-O3.offset), # Calibrate O3 with current params
+           NO2_cal = NO2.gain*((Ox.gain*(Ox-Ox.offset)-1.1*O3_cal)-NO2.offset)) # Calibrate NO2 with current params
+  
+  # Identifying deployed AQYs that did not show up in last 72 hours
+  aqy_deployed <- dplyr::select(cal_params_full, ID)
+  aqy_list <- unique(dplyr::select(aqy_data_cal, ID))
+  aqy_missing <- pull(anti_join(aqy_deployed, aqy_list, by = 'ID'), ID) # Deployed monitors missing from time frame
+  
+  print(paste('There were', nrow(aqy_list), 'AQY monitors online over the last 72 hours. Compare to', nrow(aqy_deployed), 'deployed monitors. These monitors may be offline:'))
+  print(aqy_missing)
+  
+  ### GENERATE FLAGS
+    # Filter proxy data to appropriate time, location, and pollutant
+    reg_O3 <- filter(proxy_all, modality == 'OZONE' & timestamp >= start_72 & timestamp <= end_72)
+    
+    # Initialize blank dataframes for flags, results
+    todays_flags <- mutate(aqy_deployed,
+                           ks_O3 = 0, slope_O3 = 0, offset_O3 = 0, missing_O3 = ifelse(ID %in% aqy_missing, -1, 0), extreme_O3 = 0)
+    
+    # Loop through monitors and generate flags
+    i <- 1
+    
+    while(i <= nrow(aqy_list)){
+      # Filter to the AQY we would like to test for drift
+      aqy_lone <- filter(aqy_data_cal, ID == aqy_list[i,1])
+      aqy_ID <- unique(aqy_lone$ID)
+      
+      # Filter to appropriate proxy
+      proxy_stn <- unique(aqy_lone$proxy_site)
+      proxy_O3 <- filter(reg_O3, installation_site_name %in% proxy_stn)
+      
+      if(nrow(proxy_O3) < .5*nrow(aqy_lone)/60){ #Throw error if insufficient proxy data for KS test
+        stop(print(paste('Insufficient proxy data for', aqy_ID, 'nrow =', nrow(proxy_O3))))
+      }
+      
+      #Averaging by hour
+      aqy_lone$day_hour <- paste(day(aqy_lone$Time), hour(aqy_lone$Time)) # Generate column with unique ID for day/hour
+      aqy_lone_60 <- group_by(aqy_lone, ID, day_hour) %>% summarize(O3 = mean(O3_cal), na.rm = T)
+    
+      ## Flag via ks test
+      ks_results <- ks.test(proxy_O3$value, aqy_lone_60$O3)
+      ks_p <- ks_results$p.value # Get p-value from KS test
+      
+      todays_flags$ks_O3[i] <- ifelse(ks_p <= 0.05, 1, 0)
+      
+      ## Calculate mean and variance for slope and offset calculations
+      var_aqy <- var(aqy_lone_60$O3, na.rm = T)
+      var_reg <- var(proxy_O3$value, na.rm = T)
+    
+      mean_aqy <- mean(aqy_lone_60$O3, na.rm = T)
+      mean_reg <- mean(proxy_O3$value, na.rm = T)
+      
+      # Flag via slope drift
+      manual_slope <- sqrt(var_reg/var_aqy)
+      todays_flags$slope_O3[i] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0) # Assign flag if manual slope outside bounds
+      
+      # Flag via offset drift
+      manual_offset <- mean_aqy-mean_reg*sqrt(var_reg/var_aqy)
+      todays_flags$offset_O3[i] <- ifelse(manual_offset > 5 | manual_offset < 5, 1, 0) # Assign flag if manual offset outside bounds
+      
+      # Flag extreme values
+      todays_flags$extreme_O3[i] <- ifelse(mean_aqy < 0 | mean_aqy > 350, 1, 0) # Flag if negative or 5x federal standard
+      
+      ## Print parameters
+      print(paste(aqy_ID, '|| KS P-VALUE:', ks_p, '| MANUAL SLOPE:', manual_slope, '| MANUAL OFFSET:', manual_offset))
+      i <- i + 1
+    }
+    
+    ### COMBINE WITH PREVIOUS FLAGS
+    running_flags <- read.csv('results/running_flags.csv') %>% 
+    full_join(., todays_flags, by = 'ID') %>% #Combine running flags with today's flags
+    mutate(ks_O3_run = ifelse(ks_O3 == 0, 0, ks_O3_run + ks_O3),
+           slope_O3_run = ifelse(slope_O3 == 0, 0, slope_O3_run + slope_O3),
+           offset_O3_run = ifelse(offset_O3 == 0, 0, offset_O3_run + offset_O3),
+           missing_O3_run = ifelse(missing_O3 == 0, 0, missing_O3_run + missing_O3),
+           extreme_O3_run = ifelse(extreme_O3 == 0, 0, extreme_O3_run + extreme_O3))
+  
+    print(running_flags)
+  
+    running_flags[,1:6] %>%
+      write.csv('results/running_flags.csv')
+}
+
+end <- Sys.Date()-1 ## To run for all 72-hour periods back to December
+start <- Sys.Date()-3
+
+generate_flags(start, end)
+
+```
+
+```{r}
+### GENERATE NEW PARAMETERS WHERE NECESSARY
+  # Identify monitors needing recalibration, using highest of flagged columns
+  running_flags$max_flag <- apply(MARGIN = 1, X = running_flags[grep('*_run', colnames(running_flags))], FUN = max)
+  needs_calibration <- pull(filter(running_flags, max_flag == 1), ID)
+  
+  # Recalibrate using last eight days of data (all data included in 72-hr averages for last five days)
+  start_recal <- end_72-8
+  
+  aqy_recal <- filter(aqy_data_full, ID %in% needs_calibration & timestamp >= start_recal) # AQY data for recalibration
+  proxy_recal <- filter(proxy_all, timestamp >= start_recal) # Proxy data for recalibration
+  
+  new_params <- as.data.frame(needs_calibration) %>%
+    mutate(new_slope = NA, new_offset = NA)
+  
+  for(i in 1:length(needs_calibration)){
+    # Isolate AQY data for recalibration period
+    aqy_recal_O3 <- filter(aqy_recal, ID == needs_calibration[i])
+    aqy_recal_O3$day_hour <- paste(day(aqy_recal_O3$Time), hour(aqy_recal_O3$Time))
+    aqy_recal_O3 <- group_by(aqy_recal_O3, day_hour) %>%
+      summarize(O3_raw = mean(O3))
+    
+    aqy_recal_mean <- mean(aqy_recal_O3$O3_raw, na.rm = T)
+    aqy_recal_var <- var(aqy_recal_O3$O3_raw, na.rm = T)
+    
+    # Isolate proxy data for recalibration period
+    proxy_recal_O3 <- filter(proxy_recal, installation_site_name == 'San Pablo' & modality == 'OZONE') # Fix later so it also does Berkeley where appropriate
+    
+    proxy_recal_mean <- mean(proxy_recal_O3$value, na.rm = T)
+    proxy_recal_var <- var(proxy_recal_O3$value, na.rm = T)
+    
+    new_params$new_slope[i] <- sqrt(proxy_recal_var/aqy_recal_var)
+    new_params$new_offset[i] <- aqy_recal_mean - new_params$new_slope[i]*proxy_recal_mean
+  }
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
