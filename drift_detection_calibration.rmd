@@ -79,21 +79,16 @@ aqy_data_full <- read.csv('C:/Users/18313/Desktop/airMonitoring/downloader/resul
 aqy_data_full$timestamp <- as_datetime(aqy_data_full$Time)
 
 # Current calibration parameters
-cal_params_full <- read.csv('results/cal_params.csv', stringsAsFactors = F) %>% 
+cal_params_full <- read.csv('results/cal_params_O3_original.csv', stringsAsFactors = F) %>% 
   filter(!is.na(lat)) # Filter out undeployed monitors
-cal_params_full$start_date <- as.Date(cal_params_full$start_date, '%m/%d/%Y')
-cal_params_full$end_date <- as.Date(cal_params_full$end_date, '%m/%d/%Y')
-
 
 #Calibrating using applicable parameters for date parameters
 aqy_data_cal <- inner_join(cal_params_full, aqy_data_full, by = 'ID') %>%
-  mutate(end_date = ifelse(is.na(end_date), '9999-12-31', end_date)) %>% 
   filter(timestamp >= start_date & timestamp <= end_date) %>% # Filter out rows with calibration parameters that do not apply
   mutate(PM_cal = PM.gain*(PM2.5-PM.offset), 
          O3_cal = O3.gain*(O3-O3.offset), 
-     NO2_cal = NO2.gain*((Ox.gain*(Ox-Ox.offset)-1.1*O3_cal)-NO2.offset))
+         NO2_cal = NO2.gain*((Ox.gain*(Ox-Ox.offset)-1.1*O3_cal)-NO2.offset))
 ```
-
 
 # Identifying deployed AQYs that did not show up in last 72 hours
   #aqy_deployed <- dplyr::select(cal_params, ID) %>% unique() #filter(cal_params, start_date >= start_72 & end_date <= end_72) %>% dplyr::select(ID)
@@ -127,58 +122,61 @@ recalibrate_O3 <- function(start_72, end_72){
         
         # Generate flags by monitor
         for(i in 1:nrow(aqy_O3_id)){
+          
             # Filter to the AQY we would like to test for drift
             aqy_O3_select <- filter(aqy_O3, ID == aqy_O3_id[i,1])
             aqy_ID <- unique(aqy_O3_select$ID)
             
-            # Filter to appropriate proxy
-            proxy_stn <- unique(aqy_O3$proxy_site)
+            if(nrow(aqy_O3_select) <= 72*.75){
+              todays_flags$ks_O3[i] <- -1
+              print(paste('Did not perform drift detection for', aqy_ID, 'due to insufficient data. nrow = ', nrow(aqy_O3_select)))
+              }
             
-            proxy_O3 <- filter(reg_O3, installation_site_name %in% proxy_stn)
-            
-              # Throw error if insufficient proxy data to compare distributions
-              if(nrow(proxy_O3) < .5*nrow(aqy_O3_select)){
-                stop(print(paste('Insufficient proxy data for', aqy_ID, 'nrow =', nrow(proxy_O3)))) }
-          
-            #Averaging by hour - uncomment when using PSE data
-            #aqy_O3_select$day_hour <- paste(day(aqy_O3_select$Time), hour(aqy_O3_select$Time)) # Generate column with unique ID for day/hour
-            #aqy_O3_60 <- group_by(aqy_O3_select, ID, day_hour) %>% 
-            #summarize(value = mean(O3_cal), na.rm = T)
-            
-            aqy_O3_60 <- aqy_O3_select %>% 
-              rename('value'='O3_cal')
-            
-            ## Flag via ks test
-            ks_results <- suppressWarnings(ks.test(proxy_O3$original_value, aqy_O3_60$value, exact = F))
-            ks_p <- ks_results$p.value # Get p-value from KS test
-            
-            todays_flags$ks_O3[i] <- ifelse(ks_p <= 0.05, 1, 0)
-            
-            
-            ## Flag results via mean-variance moment matching
-            # Slope drift
-            var_aqy <- var(aqy_O3_60$value, na.rm = T)
-            var_reg <- var(proxy_O3$original_value, na.rm = T)
-            
-            manual_slope <- sqrt(var_reg/var_aqy)
-            
-            todays_flags$slope_O3[i] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0) # Assign flag if manual slope outside bounds
-            
-            # Offset drift
-            mean_aqy <- mean(aqy_O3_60$value, na.rm = T)
-            mean_reg <- mean(proxy_O3$original_value, na.rm = T)
-            
-            manual_offset <- mean_reg - mean_aqy*manual_slope
-            
-            todays_flags$offset_O3[i] <- ifelse(manual_offset > 5 | manual_offset < -5, 1, 0) # Assign flag if manual offset outside bounds
-            
-            ## Print parameters
-            print(paste(aqy_ID, '|| KS P-VALUE:', ks_p, '| MANUAL SLOPE:', manual_slope, '| MANUAL OFFSET:', manual_offset))
+            else{
+              
+              # Filter to appropriate proxy
+              proxy_stn <- unique(aqy_O3_select$proxy_site)
+              proxy_O3 <- filter(reg_O3, installation_site_name %in% proxy_stn)
+              
+                # Throw error if insufficient proxy data to compare distributions
+                if(nrow(proxy_O3) < .5*nrow(aqy_O3_select)){
+                  stop(print(paste('Insufficient proxy data for', aqy_ID, 'nrow =', nrow(proxy_O3)))) }
+              
+              aqy_O3_select <- aqy_O3_select %>% 
+                rename('value'='O3_cal')
+              
+              ## Flag via ks test
+              ks_results <- suppressWarnings(ks.test(proxy_O3$original_value, aqy_O3_select$value, exact = F))
+              ks_p <- ks_results$p.value # Get p-value from KS test
+              
+              todays_flags$ks_O3[i] <- ifelse(ks_p <= 0.05, 1, 0)
+              
+              
+              ## Flag results via mean-variance moment matching
+              # Slope drift
+              var_aqy <- var(aqy_O3_select$value, na.rm = T)
+              var_reg <- var(proxy_O3$original_value, na.rm = T)
+              
+              manual_slope <- sqrt(var_reg/var_aqy)
+              
+              todays_flags$slope_O3[i] <- ifelse(manual_slope > 1.3 | manual_slope < .7, 1, 0) # Assign flag if manual slope outside bounds
+              
+              # Offset drift
+              mean_aqy <- mean(aqy_O3_select$value, na.rm = T)
+              mean_reg <- mean(proxy_O3$original_value, na.rm = T)
+              
+              manual_offset <- mean_reg - mean_aqy*manual_slope
+              
+              todays_flags$offset_O3[i] <- ifelse(manual_offset > 5 | manual_offset < -5, 1, 0) # Assign flag if manual offset outside bounds
+              
+              ## Print parameters
+              print(paste(aqy_ID, 'from', start_72, 'to', end_72, '|| KS P-VALUE:', ks_p, '| MANUAL SLOPE:', manual_slope, '| MANUAL OFFSET:', manual_offset))
+            }
           }
         
         # Combine today's flags with existing flags
         running_flags <- read.csv('results/running_flags.csv') %>% 
-        full_join(., todays_flags, by = 'ID') %>% #Combine running flags with today's flags
+        full_join(., todays_flags, by = 'ID') %>% 
         mutate(ks_O3_run = ifelse(ks_O3 == 0, 0, ks_O3_run + ks_O3),
                slope_O3_run = ifelse(slope_O3 == 0, 0, slope_O3_run + slope_O3),
                offset_O3_run = ifelse(offset_O3 == 0, 0, offset_O3_run + offset_O3))
@@ -217,9 +215,6 @@ recalibrate_O3 <- function(start_72, end_72){
           
           # Isolate AQY data for recalibration period
           aqy_recal_O3 <- filter(aqy_recal, ID == needs_calibration[i])
-          #aqy_recal_O3$day_hour <- paste(day(aqy_recal_O3$Time), hour(aqy_recal_O3$Time))
-          #aqy_recal_O3 <- group_by(aqy_recal_O3, day_hour) %>%
-            #summarize(O3_raw = mean(O3))
           
           aqy_recal_mean <- mean(aqy_recal_O3$O3, na.rm = T)
           aqy_recal_var <- var(aqy_recal_O3$O3, na.rm = T)
@@ -234,22 +229,31 @@ recalibrate_O3 <- function(start_72, end_72){
           new_params$O3.offset[i] <- proxy_recal_mean - new_params$O3.slope[i]*aqy_recal_mean
         }
         
-        param_info <- dplyr::select(cal_params_full, ID, description, address, city, lat, long)
+        # Add new parameters to list of old and write output
+        param_info <- dplyr::select(cal_params_full, c('ID', 'description', 'address', 'city', 'lat', 'lon'))
         
         param_new_O3 <- left_join(new_params, param_info, by = 'ID') %>%
-          dplyr::select(ID, description, address, city, proxy_site, lat, long, O3.slope, O3.offset, start_date, end_date)
+          dplyr::select(ID, description, address, city, proxy_site, lat, lon, O3.slope, O3.offset, start_date, end_date)
        
         param_path <- list.files('results', 'cal_params_O3*')
         param_path_current <- param_path[length(param_path)]
-        
         param_existing_O3 <- read.csv(paste0('results/',param_path_current), stringsAsFactors = F) %>%
-          dplyr::select(cal_params_full, ID, description, address, city, proxy_site, lat, long, O3.slope, O3.offset, start_date, end_date) #Need to add something to update end date
+          dplyr::select(ID, c(description, address, city, proxy_site, lat, lon, O3.slope, O3.offset, start_date, end_date)) 
+        param_existing_O3$end_date <- ifelse(param_existing_O3$ID %in% param_new_O3$ID & end_date == '9999-12-31', as.character(as.Date(param_new_O3$start_date)-1), param_existing_O3$end_date)
         
         running_params <- rbind(param_new_O3, param_existing_O3) %>%
           arrange(ID, start_date)
+        
         print(running_params)
         
-        write.csv(running_params, paste0('results/cal_params_O3_', end_recal, '.csv'))
+        write.csv(running_params, paste0('results/cal_params_O3_', end_recal, '.csv'), row.names = F)
+        
+        # Reset running flags for re-calibrated data
+        dplyr::select(running_flags, -c(max_flag, ks_O3, slope_O3, offset_O3)) %>%
+          mutate(ks_O3_run = ifelse(ID %in% needs_calibration, 0, ks_O3_run),
+                 slope_O3_run = ifelse(ID %in% needs_calibration, 0, slope_O3_run), 
+                 offset_O3_run = ifelse(ID %in% needs_calibration, 0, offset_O3_run)) %>%
+          write.csv('results/running_flags.csv', row.names = F)
                   
         return(running_params)
       }
@@ -259,13 +263,12 @@ recalibrate_O3 <- function(start_72, end_72){
 #end <- Sys.Date()-203 ## To run for all 72-hour periods back to December
 #start <- Sys.Date()-205
 
-end_dates <- seq(Sys.Date()-27, Sys.Date()-1, 1)
-start_dates <- seq(Sys.Date()-29, Sys.Date()-3, 1)
+end_dates <- seq(Sys.Date()-203, Sys.Date()-1, 1)
+start_dates <- seq(Sys.Date()-205, Sys.Date()-3, 1)
 
 for(i in 1:length(start_dates)){
     recalibrate_O3(start_dates[i], end_dates[i])
 }
-
 ```
 
 
