@@ -1,0 +1,294 @@
+---
+title: "Remote Network Calibration"
+author: "Audrey Smith"
+date: "6/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(mailR)
+```
+
+# RAMN_Calibration
+* This script reads in un-calibrated network data that has been pulled from the Aeroqual API via Python script
+* This script requires a proxy to calibrate our data. Bay Area regulatory data is pulled for these purposes. Very simple exploration is done for land use parameters, but for now the most proximate stations are generally assumed to be the best proxies. This assumption will be subject to further analysis at a later time.
+  -https://docs.airnowapi.org/Data/docs
+
+### The script is designed to:
+1. Read in daily, one-minute air quality monitoring data from Richmond Network, previously downloaded with Python script
+
+2. Call regulatory API and download data for monitoring stations nearest Richmond
+   API documentation: https://docs.airnowapi.org/
+   2.a. Each day, pull in just the previous day and append to a running log of proxy data
+
+3. Compare data to proxy data for drift detection
+3.a. Run Kolmogorov Smirnov test to compare three-day rolling average of each monitor to that of the BAAQMD data
+    3.a.i. A flag should be created for each time KS statistic goes below 0.05
+        3.a.ii. Create separate column for running count of flag
+
+3.b. Run deviance test to see if mean and variance of our data differ substantially with those of the proxy data
+    3.b.i. A separate flag should be created for each of these, with a running flag column 
+
+4. After five consecutive days of flags for any parameter, recalibrate data
+    4.a. Calibration uses mean and variance of our data, proxy data to create new slope and offset
+    4.b. Data should be re-calibrated back to first day of flag, using eight days of data for slope and offset calculation
+        
+5. Output - running log of calibration parameters (slope, offset, days valid) for each monitor for NO2 and O3
+
+
+__Temporarily Removed - to Work Back In__
+# Identifying deployed AQYs that did not show up in last 72 hours
+  #aqy_deployed <- dplyr::select(cal_params, ID) %>% unique() #filter(cal_params, start_date >= start_72 & end_date <= end_72) %>% dplyr::select(ID)
+  #aqy_list <- unique(dplyr::select(aqy_data_cal, ID))
+  
+  #aqy_missing <- pull(anti_join(aqy_deployed, aqy_list, by = 'ID'), ID) # Deployed monitors missing from time frame
+ # print(paste('There were', nrow(aqy_list), 'AQY monitors online over the last 72 hours. Compare to', nrow(aqy_deployed), 'deployed monitors. These monitors may be offline:'))
+ # print(aqy_missing)
+  
+  # Identifying monitors with extreme values
+  #aqy_extreme <- group_by(aqy_data_cal, ID) %>%
+    #summarize(O3_mean = mean(O3_cal)) %>%
+    #filter(O3_mean < 0 | O3_mean >= 350)
+  
+  #print(paste('Extreme values were observed at:', aqy_extreme))
+
+_Define Function to Get Proxy Data_
+```{r}
+get_proxy <- function(start_proxy, end_proxy){
+  request_url = paste0('http://www.airnowapi.org/aq/data/?startDate=', start_proxy, 'T00&endDate=', end_proxy, 'T23&parameters=OZONE&BBOX=-122.720038,37.701918,-121.965229,38.126622&dataType=C&format=application/json&verbose=0&nowcastonly=0&includerawconcentrations=1&API_KEY=C05358E3-5508-4216-A03E-E229E0368B7E')
+   
+  request_call <- GET(url = request_url)
+  
+  request_json <- content(request_call, as = 'text', type = NULL, encoding = 'UTF-8')
+  request_df <- arrange(fromJSON(request_json, simplifyDataFrame = TRUE), desc(UTC))
+    
+  # Join with station names and clean column names
+  reg_names <- read.csv('spatial/monitor_shp_named.csv') %>% dplyr::select(-X)
+  reg_data <- suppressWarnings(inner_join(request_df, reg_names, by = c('Latitude'='monitor_lat', 'Longitude'='monitor_long'))) %>%
+    mutate(timestamp = paste(substr(UTC, 1, 10), substr(UTC, 12, 16), ':00'), RawConcentration = ifelse(RawConcentration == -999, Value, RawConcentration))
+    
+  reg_data <- dplyr::select(reg_data, -c(UTC)) %>% 
+      rename('lat'='Latitude', 'lon'='Longitude', 'modality'='Parameter', 'units'='Unit', 'O3_cal'='Value', 'O3'='RawConcentration', 'reg_site' = 'monitor_names')
+  
+  return(reg_data)
+}
+```
+
+_Ozone Drift Detection & Calibration_
+```{r}
+# For use when testing a subset - two early deployments, two late, two near SP Station, two far
+examples <- c('AQY BB-635', 'AQY BB-640', 'AQY BB-805', 'AQY BB-649', 'AQY BB-611', 'AQY BB-644', 'AQY BB-808', 'AQY BB-793')
+
+calibrate_O3 <- function(start_72){
+  end_72 <- start_72+2
+  
+  ### GET PROXY DATA
+  reg_data <- get_proxy(start_72, end_72)
+  
+  ### GET AQY DATA
+  aqy_data_full <- read.csv('C:/Users/18313/Desktop/airMonitoring/downloader/results/concatenated_data/PSE_AQY_2019-12-06_2020-06-30_freq_60.csv', stringsAsFactors = F) %>%
+    rename('timestamp'='Time')
+  
+  ### CALIBRATE AQY DATA
+  # Read in most current set of calibration parameters
+  cal_files <- list.files('results', 'cal_params_O3*', full.names = T)
+  cal_file_current <- cal_files[length(cal_files)]
+      
+  cal_params_full <- read.csv(cal_file_current, stringsAsFactors = F) %>% 
+    filter(!is.na(lat)) # Filter out un-deployed monitors
+  
+  # Calibrating using applicable parameters for date
+  aqy_data_cal <- inner_join(aqy_data_full, cal_params_full, by = 'ID') %>%
+      filter(timestamp >= start_date & timestamp <= end_date) %>% # Filter out rows with calibration parameters that do not apply
+      mutate(O3_cal = O3.offset + O3.gain*O3)
+  
+  # Filter calibrated data to date range of interest
+  aqy_data_72 <- filter(aqy_data_cal, timestamp >= start_72 & timestamp <= end_72)
+        
+  ### DRIFT DETECTION
+  # Initialize blank data frames for flags, results
+  aqy_list_id <- unique(pull(aqy_data_72, ID)) 
+  
+  todays_flags <- as.data.frame(aqy_list_id) %>%
+    mutate(ks_O3 = 0, gain_O3 = 0, offset_O3 = 0) %>%
+    rename('ID'='aqy_list_id')
+  
+  # Generate flags by monitor
+  for(i in 1:length(aqy_list_id)){
+          
+    # Filter to the AQY we would like to test for drift
+    aqy_ID <- aqy_list_id[i]
+    aqy_O3 <- filter(aqy_data_72, ID == aqy_ID)
+            
+    # Filter to appropriate proxy
+    reg_stn <- unique(aqy_O3$proxy_site)
+    reg_O3 <- filter(reg_data, reg_site %in% reg_stn)
+                
+    # Do not execute if insufficient data
+    if(nrow(aqy_O3) <= .75*nrow(reg_O3) | nrow(aqy_O3)*.75 >= nrow(reg_O3)){
+         print(paste('Did not perform drift detection for', aqy_ID, 'due to insufficient data. nrow AQY = ', nrow(aqy_O3), 'nrow Proxy =', nrow(reg_O3)))
+              }
+              
+        else{
+              ## Flag via ks test
+              ks_results <- suppressWarnings(ks.test(reg_O3$O3_cal, aqy_O3$O3_cal, exact = F))
+              ks_p <- ks_results$p.value # Get p-value from KS test
+                
+              todays_flags$ks_O3[i] <-ifelse(ks_p <= 0.05, -1, 0)
+                
+              ## Flag results via mean-variance moment matching
+              # Gain drift
+              var_aqy <- var(aqy_O3$O3_cal, na.rm = T)
+              var_proxy <- var(reg_O3$O3_cal, na.rm = T)
+              manual_gain <- sqrt(var_proxy/var_aqy)
+                
+              todays_flags$gain_O3[i] <- ifelse(manual_gain > 1.3 | manual_gain < .7, 1, 0) # Assign flag if manual gain outside bounds
+                
+              # Offset drift
+              mean_aqy <- mean(aqy_O3$O3_cal, na.rm = T)
+              mean_proxy <- mean(reg_O3$O3_cal, na.rm = T)
+              manual_offset <- mean_proxy - mean_aqy*manual_gain
+                
+              todays_flags$offset_O3[i] <- ifelse(manual_offset > 5 | manual_offset < -5, 1, 0) # Assign flag if manual offset outside bounds
+                
+              ## Print parameters
+              print(paste(aqy_ID, 'from', start_72, 'to', end_72, '|| KS P-VALUE:', ks_p, '| MANUAL GAIN:', manual_gain, '| MANUAL OFFSET:', manual_offset))
+              }
+          }
+        
+        # Combine today's flags with existing flags
+        running_flags <- read.csv('results/running_flags.csv', stringsAsFactors = F) %>% 
+        full_join(., todays_flags, by = 'ID') %>% 
+        mutate(ks_O3_run = ifelse(ks_O3 == 0, 0, ks_O3_run + ks_O3),
+               gain_O3_run = ifelse(gain_O3 == 0, 0, gain_O3_run + gain_O3),
+               offset_O3_run = ifelse(offset_O3 == 0, 0, offset_O3_run + offset_O3))
+        
+        dplyr::select(running_flags, c(ID, ks_O3_run, gain_O3_run, offset_O3_run)) %>%
+          write.csv('results/running_flags.csv', row.names = F)
+    
+    ### RECALIBRATION
+    # Set important dates
+    start_recal <- end_72-30 # Use 30 days of data in re-calibration
+    end_recal <- end_72 # Stop recalibrating on last day of 72-hr period
+    flag_detected <- end_72-5 # Apply param starting first day flag detected
+          
+    # Identify monitors needing recalibration, using highest of flagged columns
+    running_flags$max_flag <- apply(MARGIN = 1, X = running_flags[grep('*_run', colnames(running_flags))], FUN = max)
+    needs_calibration <- pull(filter(running_flags, max_flag >= 5), ID)
+    
+    # Do nothing if no monitors need calibration
+    if(length(needs_calibration) == 0){print(paste('No recalibration is needed for period from', start_72, 'to', end_72))}
+      else{# Re-calibrate using last eight days of data (all data included in 72-hr averages for last five days)
+          aqy_recal <- filter(aqy_data_cal, ID %in% needs_calibration & timestamp >= start_recal & timestamp <= end_recal)
+          proxy_recal <- get_proxy(start_recal, end_recal)
+          
+          # Blank dataframe for new parameters
+          new_params <- as.data.frame(needs_calibration) %>%
+          rename('ID'='needs_calibration') %>%
+          mutate(proxy_site = 'San Pablo', O3.gain = 1, O3.offset = 0, start_date = as.character(flag_detected), end_date = '9999-12-31', original_param = 0) # Fix proxy site portion later
+          
+          for(i in 1:length(needs_calibration)){
+            
+            # Isolate data for desired AQY & proxy site
+            aqy_recal_O3 <- filter(aqy_recal, ID == needs_calibration[i])
+            proxy_recal_O3 <- filter(proxy_recal, reg_site == 'San Pablo') # Fix later so it also does Berkeley where appropriate
+            
+            # Calculate necessary parameters using uncalibrated data
+            aqy_recal_mean <- mean(aqy_recal_O3$O3, na.rm = T)
+            aqy_recal_var <- var(aqy_recal_O3$O3, na.rm = T)
+            
+            proxy_recal_mean <- mean(proxy_recal_O3$O3_cal, na.rm = T)
+            proxy_recal_var <- var(proxy_recal_O3$O3_cal, na.rm = T)
+            
+            # Calculate new gain and offset
+            gain_new <- sqrt(proxy_recal_var/aqy_recal_var)
+            offset_new <- proxy_recal_mean - gain_new*aqy_recal_mean
+            
+            new_params$O3.gain[i] <- gain_new
+            new_params$O3.offset[i] <- offset_new
+            
+          }
+          
+          # Edit new parameters to combine with old
+          param_info <- dplyr::select(cal_params_full, c('ID', 'description', 'address', 'city', 'lat', 'lon'))
+          
+          param_new_O3 <- left_join(new_params, param_info, by = 'ID') %>%
+            dplyr::select(c('ID', 'description', 'address', 'city', 'proxy_site', 'lat', 'lon', 'O3.gain', 'O3.offset', 'start_date', 'end_date', 'original_param'))
+         
+          # Edit old parameters to combine with new
+          param_existing_O3 <- read.csv(cal_file_current, stringsAsFactors = F) %>%
+            dplyr::select(c('ID', 'description', 'address', 'city', 'proxy_site', 'lat', 'lon', 'O3.gain', 'O3.offset', 'start_date', 'end_date', 'original_param')) 
+          
+          param_existing_O3$end_date <- ifelse(param_existing_O3$ID %in% param_new_O3$ID & param_existing_O3$end_date == '9999-12-31', as.character(as.Date(param_new_O3$start_date)-1), param_existing_O3$end_date)
+          
+          # Write combined parameters as output
+          running_params <- rbind(param_new_O3, param_existing_O3) %>%
+            unique() %>%
+            arrange(ID, start_date)
+        
+          write.csv(running_params, paste0('results/cal_params_O3_', end_recal, '.csv'), row.names = F)
+          
+          # Reset running flags for re-calibrated data
+          dplyr::select(running_flags, -c(max_flag, ks_O3, gain_O3, offset_O3)) %>%
+            mutate(ks_O3_run = ifelse(ID %in% needs_calibration, 0, ks_O3_run),
+                   gain_O3_run = ifelse(ID %in% needs_calibration, 0, gain_O3_run), 
+                   offset_O3_run = ifelse(ID %in% needs_calibration, 0, offset_O3_run)) %>%
+            write.csv('results/running_flags.csv', row.names = F)
+                    
+      }
+}
+
+# Run starting 12/5 - stop three days ago
+dates_run <- seq(Sys.Date()-209, Sys.Date()-3, 1)
+
+lapply(dates_run, calibrate_O3)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
