@@ -166,7 +166,7 @@ calibrate_monitors <- function(start_72, pollutant){
         new_params$O3.gain[i] <- gain_new_O3
         new_params$O3.offset[i] <- offset_new_O3}
       
-      else{
+      else{try({
         # Calculate new gain and offset for NO2 using mean-variance moment matching
         new_params$NO2.b0[i] <- mean(proxy_recal_i$proxy_rand, na.rm = T) - mean(aqy_recal_i$Ox - aqy_recal_i$O3_cal, na.rm = T)
         new_params$NO2.b1[i] <- sqrt(var(proxy_recal_i$proxy_rand, na.rm = T)/var(aqy_recal_i$Ox - aqy_recal_i$O3_cal, na.rm = T))
@@ -191,7 +191,7 @@ calibrate_monitors <- function(start_72, pollutant){
         
         new_params$NO2.b0_kl[i] <- kl_out$getValue(b0)
         new_params$NO2.b1_kl[i] <- kl_out$getValue(b1)
-        new_params$NO2.b2_kl[i] <- kl_out$getValue(b2)
+        new_params$NO2.b2_kl[i] <- kl_out$getValue(b2)}, silent = F)
       }
     }
     
@@ -231,14 +231,17 @@ calibrate_monitors <- function(start_72, pollutant){
 }
 
 ### RUN FUNCTION FOR ALL DAYS BACK TO LAST RE-CALIBRATION
-while(i <= Sys.Date()-3){run_date <- as.Date(read.csv('results/last_start/last_start_OZONE.csv', stringsAsFactors = F)[1,1]) + 1
-calibrate_monitors(run_date, 'OZONE')
-run_date <- run_date + 1}
+run_date_O3 <- as.Date(read.csv('results/last_start/last_start_OZONE.csv', stringsAsFactors = F)[1,1]) + 1
+while(run_date_O3 <= Sys.Date()-3){
+  calibrate_monitors(run_date_O3, 'OZONE')
+  run_date_O3 <- run_date_O3 + 1}
 
-while(i <= Sys.Date()-3){run_date <- as.Date(read.csv('results/last_start/last_start_NO2.csv', stringsAsFactors = F)[1,1]) + 1
-print(run_date)
-calibrate_monitors(run_date, 'NO2')
-run_date <- run_date + 1}
+run_date_NO2 <- as.Date(read.csv('results/last_start/last_start_NO2.csv', stringsAsFactors = F)[1,1]) + 1
+
+while(run_date_NO2 <= Sys.Date()-3){
+  print(run_date_NO2)
+  calibrate_monitors(run_date_NO2, 'NO2')
+  run_date_NO2 <- run_date_NO2 + 1}
 
 
 
