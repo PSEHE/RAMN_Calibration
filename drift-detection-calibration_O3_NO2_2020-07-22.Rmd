@@ -94,7 +94,9 @@ detect_drift <- function(aqy, aqy_data_72, proxy_data_72){
                         
       # Test for monitor drift if sufficient data in AQY and proxy data sets
       if(nrow(aqy_for_cal) <= .75*nrow(proxy_for_cal) | nrow(aqy_for_cal)*.75 >= nrow(proxy_for_cal)){
-        print(paste('Did not perform drift detection for', aqy, 'due to insufficient data. NROW AQY = ', nrow(aqy_for_cal), 'NROW Proxy =', nrow(proxy_for_cal)))}
+        print(paste('Did not perform drift detection for', aqy, 'due to insufficient data. NROW AQY = ', nrow(aqy_for_cal), 'NROW Proxy =', nrow(proxy_for_cal)))
+        all_zeroes <- as.data.frame(cbind(aqy, 0, 0, 0))
+        return(all_zeroes)}
               
         else{ 
           # Kolmogorov-Smirnov test
@@ -125,15 +127,15 @@ detect_drift <- function(aqy, aqy_data_72, proxy_data_72){
 recalibrate_O3 <- function(aqy, aqy_data_month, proxy_data_month){
   print(paste(aqy))
   
-  #Mean-Variance Moment Matching
+  # Generate data
   aqy_data_month_i <- filter(aqy_data_month, ID == aqy)
   proxy_data_month_i <- filter(proxy_data_month, proxy_site == unique(aqy_data_month_i$proxy_site))
-  recal_i <- na.omit(inner_join(aqy_data_month_i, proxy_data_month_i, 'timestamp'))
   
+  # Mean-Variance Moment Matching
   O3.gain <- sqrt(var(proxy_data_month_i$proxy_rand, na.rm = T)/var(aqy_data_month_i$O3, na.rm = T))
   O3.offset <- mean(proxy_data_month_i$proxy_rand, na.rm = T) - O3.gain*mean(aqy_data_month_i$O3, na.rm = T)
   
-  #Combined results
+  # Combined results
   O3_params <- as.data.frame(cbind(aqy, O3.gain, O3.offset))
   
   return(O3_params)
@@ -144,7 +146,12 @@ recalibrate_O3 <- function(aqy, aqy_data_month, proxy_data_month){
 recalibrate_NO2 <- function(aqy, aqy_data_month, proxy_data_month){
   print(aqy)
   
-  #Mean-variance moment matching
+  # Generate data
+  aqy_data_month_i <- filter(aqy_data_month, ID == aqy)
+  proxy_data_month_i <- filter(proxy_data_month, proxy_site == unique(aqy_data_month_i$proxy_site))
+  recal_i <- na.omit(inner_join(aqy_data_month_i, proxy_data_month_i, 'timestamp'))
+  
+  # Mean-variance moment matching
   NO2.b0 <- mean(proxy_data_month_i$proxy_rand, na.rm = T) - mean(aqy_data_month_i$Ox - aqy_data_month_i$O3_cal, na.rm = T)
   NO2.b1 <- sqrt(var(proxy_data_month_i$proxy_rand, na.rm = T)/var(aqy_data_month_i$Ox - aqy_data_month_i$O3_cal, na.rm = T))
   NO2.b2 <- NO2.b1
@@ -173,18 +180,35 @@ recalibrate_NO2 <- function(aqy, aqy_data_month, proxy_data_month){
     NO2.b2_kl <- kl_out$getValue(b2)
   })
   
+  #warning(!exists('NO2.b0_kl'), 'Objective function solver failure: defaulting to hand calculated values')
+  
+  NO2.b0_kl <- if(exists('NO2.b0_kl')){NO2.b0_kl}
+                else{NO2.b0}
+  
+  NO2.b1_kl <- if(exists('NO2.b1_kl')){NO2.b1_kl}
+                else{NO2.b1}
+  
+  NO2.b2_kl <- if(exists('NO2.b2_kl')){NO2.b2_kl}
+                else{NO2.b2}
+  
   #Combined results
   NO2_params <- as.data.frame(cbind(aqy, NO2.b0, NO2.b1, NO2.b2, NO2.b0_kl, NO2.b1_kl, NO2.b2_kl))
   
   return(NO2_params)
 }
+
+
 ```            
 
 ```{r}
 process_new_params <- function(pollutant, new_params_list, flag_detected){
   
   new_params <- data.frame(matrix(unlist(new_params_list), nrow=length(new_params_list), byrow = T))
-  colnames(new_params) <- ifelse(pollutant == 'OZONE', c('ID', 'gain', 'offset'), c('ID', 'NO2.b0', 'NO2.b1', 'NO2.b2', 'NO2.b0_kl', 'NO2.b1_kl', 'NO2.b2_kl'))
+  
+  O3_names <- c('ID', 'O3.gain', 'O3.offset')
+  NO2_names <- c('ID', 'NO2.b0', 'NO2.b1', 'NO2.b2', 'NO2.b0_kl', 'NO2.b1_kl', 'NO2.b2_kl')
+  colnames(new_params) <- switch(pollutant, 'OZONE'=O3_names, 'NO2'=NO2_names)
+  
   new_params$start_date <- flag_detected
   new_params$end_date <- '9999-12-31'
   
@@ -192,7 +216,6 @@ process_new_params <- function(pollutant, new_params_list, flag_detected){
 }
 ```
 
-### BUG HERE
 ```{r}
 combine_old_and_new <- function(pollutant, new_params){
   
@@ -201,15 +224,19 @@ combine_old_and_new <- function(pollutant, new_params){
           
   params_existing <- read.csv(params_existing_path[length(params_existing_path)], stringsAsFactors = F)
   params_existing$end_date <- ifelse(params_existing$ID %in% new_params$ID & params_existing$end_date == '9999-12-31', as.character(as.Date(new_params$start_date)-1), params_existing$end_date)
+  get_these_cols <- colnames(params_existing)
           
   # Edit new parameters to combine with old
-  monitor_info <- dplyr::select(params_existing, c('ID', 'description', 'address', 'city', 'lat', 'lon'))
-  params_current <- inner_join(monitor_info, new_params, by = 'ID')
+  monitor_info <- dplyr::select(params_existing, c('ID', 'description', 'proxy_site', 'address', 'city', 'lat', 'lon'))
+  params_current_info <- inner_join(monitor_info, new_params, by = 'ID')
+  params_current <- dplyr::select(params_current_info, get_these_cols)
   
   # Combine parameters
   running_params <- rbind(params_current, params_existing) %>%
     unique() %>%
     arrange(ID, start_date)
+  
+  return(running_params)
 }
 ```
 
@@ -264,17 +291,13 @@ calibrate_monitors <- function(start_72, pollutant){
   new_params <- process_new_params(pollutant, new_params_list, flag_detected)
   
   combined_params <- combine_old_and_new(pollutant, new_params)
-  
+
   write.csv(combined_params, paste0('results/cal_params_', pollutant, '_', end_recal, '.csv'), row.names = F)
   write.csv(reset_flags, paste0('results/running_flags/running_flags_', pollutant, '.csv'), row.names = F)
   suppressWarnings(write.csv(as.character(start_72), paste0('results/last_start/', 'last_start_', pollutant, '.csv'), col.names = F, row.names = F))
   
   return(combined_params)
 }
-```
-
-```{r}
-calibrate_monitors(as_date('2019-12-10'), 'OZONE')
 ```
 
 ### RUN FUNCTION FOR ALL DAYS BACK TO LAST RE-CALIBRATION
@@ -285,8 +308,6 @@ while(run_date_O3 <= Sys.Date()-3){
   print(run_date_O3)
   calibrate_monitors(run_date_O3, 'OZONE')
   run_date_O3 <- run_date_O3 + 1}
-
-
 ```
 
 ```{r}
