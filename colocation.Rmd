@@ -1,0 +1,48 @@
+---
+title: "Untitled"
+author: "Audrey Smith"
+date: "9/1/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+```
+
+```{r}
+colocated_data <- read.csv("C:/Users/18313/Desktop/richmond_air/downloader/results/concatenated_data/zz_colocated_aqys_2020-06-03_2020-09-01_freq_60.csv", stringsAsFactors = F)
+
+proxy_data <- read.csv("results/proxy/OZONE_proxy_data.csv", stringsAsFactors = F) %>%
+  filter(proxy_site == 'San Pablo - Rumrill') %>%
+  mutate(timestamp = as.character(ymd_hms(timestamp) - 8*60*60))
+
+O3 <- read.csv("results/cal_params_OZONE_2020-08-30_colocated.csv", stringsAsFactors = F)
+NO2 <- read.csv('results/cal_params_NO2_2020-06-16.csv', stringsAsFactors = F)
+
+colocated_w_proxy <- inner_join(colocated_data, proxy_data, by = c('Time'='timestamp'))
+
+O3_calibrated <- inner_join(colocated_w_proxy, O3, by = 'ID') %>%
+  filter(Time >= start_date & Time <= end_date) %>%
+  mutate(O3_cal = O3.gain * O3 + O3.offset) %>%
+  dplyr::select(-c(start_date, end_date)) %>%
+  inner_join(NO2, by = 'ID') %>%
+  filter(Time >= start_date & Time <= end_date) %>%
+  mutate(NO2_cal = NO2.b0 + Ox - NO2.b1*O3_cal)
+```
+
+```{r}
+ggplot() + 
+  geom_line(data = subset(O3_calibrated, ID == 'AQY BB-642'), aes(x = as_datetime(Time), y = NO2, color = 'AQY Raw')) +
+  geom_line(data = subset(O3_calibrated, ID == 'AQY BB-642'), aes(x = as_datetime(Time), y = NO2_cal, color = 'PSE Calibrated')) +
+  geom_line(data = proxy_data, aes(x = as_datetime(timestamp), y = proxy_raw, color = 'San Pablo')) +
+  geom_point(data = subset(O3_calibrated, ID == 'AQY BB-642'), aes(x = as_datetime(start_date), y = 0, fill = 'Date Recalibrated')) +
+  #scale_color_manual(name = 'Data Source', values = c('coral', 'purple', 'cyan3'), aesthetics = 'color') +
+  scale_fill_manual(name = 'Recalibrations', values = c("black")) +
+  xlim(c(as_datetime('2020-06-03 00:00:00'), as_datetime('2020-08-31 23:00:00'))) +
+  ggtitle('O3 Calibration Results - AQY 642') +
+  theme(plot.title = element_text(hjust = .5, face = 'bold'))
+```

@@ -1,0 +1,127 @@
+---
+title: "Check Calibration"
+author: "Audrey Smith"
+date: "8/25/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+```
+
+```{r}
+NO2 <- read.csv('C:/Users/18313/Desktop/pse_cal_params_NO2_2020-08-25.csv', stringsAsFactors = F)
+O3 <- read.csv('C:/Users/18313/Desktop/pse_cal_params_O3_2020-08-25.csv', stringsAsFactors = F)
+
+proxy_NO2 <- read.csv('results/proxy/OZONE_proxy_data.csv', stringsAsFactors = F)
+proxy_O3 <- read.csv('results/proxy/NO2_proxy_data.csv', stringsAsFactors = F)
+
+aq_cal_june <- read.csv('C:/Users/18313/Desktop/richmond_air/aeroqual/2020-06/cal_params_aeroqual_2020-06.csv', stringsAsFactors = F)
+aq_cal_cont <- read.csv('C:/Users/18313/Desktop/richmond_air/aeroqual/2020-08/pse_aqy_calparams_2020-08-20.csv', stringsAsFactors = F)
+  
+raw <- read.csv('C:/Users/18313/Desktop/richmond_air/downloader/results/concatenated_data/PSE_AQY_2019-12-06_2020-08-20_freq_60.csv', stringsAsFactors = F)
+```
+
+```{r}
+for(i in 1:nrow(NO2)){
+  if(NO2$end_date[i] == max(pull(subset(NO2, ID == NO2$ID[i]), end_date))){NO2$end_date[i] <- '9999-12-31 23:00:00'}
+    else{NO2$end_date[i] <- as.character(ymd_hms(NO2$start_date[i+1]) - 60*60)}
+}
+
+for(i in 1:nrow(O3)){
+  if(O3$end_date[i] == max(pull(subset(O3, ID == O3$ID[i]), end_date))){O3$end_date[i] <- '9999-12-31 23:00:00'}
+    else{O3$end_date[i] <- as.character(ymd_hms(O3$start_date[i+1]) - 60*60)}
+}
+```
+
+```{r}
+cal_data_O3 <- full_join(raw, O3, by = 'ID') %>%
+  filter(Time >= start_date & Time <= end_date) %>%
+  mutate(O3_pse = O3.offset + O3.gain*O3) %>%
+  full_join(., proxy_O3, by = c('proxy_site', 'Time'='timestamp')) %>%
+  rename('O3_proxy'='proxy_rand') %>%
+  dplyr::select(Time, ID, O3, O3_pse, O3_proxy, NO2, Ox) 
+
+cal_data <- full_join(cal_data_O3, NO2, by = 'ID') %>%
+  filter(Time >= start_date & Time <= end_date) %>%
+  mutate(NO2_pse = NO2.b0_kl + NO2.b1_kl*Ox - NO2.b2_kl*O3_pse) %>%
+  inner_join(., proxy_NO2, by = c('proxy_site', 'Time'='timestamp')) %>%
+  rename('NO2_proxy'='proxy_rand') %>%
+  dplyr::select(Time, ID, proxy_site, O3, O3_pse, O3_proxy, NO2, NO2_pse, NO2_proxy, Ox)
+
+cal_proxy <- full_join(cal_data, aq_cal_cont, by = 'ID') %>%
+  mutate(ym = paste0(year(Time), '-', str_sub(paste0('0', month(Time)), -2L, -1L))) %>%
+  filter(ym == year_month | is.na(year_month)) %>%
+  full_join(., aq_cal_june, by = 'ID') %>%
+  mutate(O3.gain = ifelse(is.na(O3.gain), O3.gain.aq, O3.gain),
+         O3.offset = ifelse(is.na(O3.offset), O3.offset.aq, O3.offset),
+         Ox.gain = ifelse(is.na(Ox.gain), Ox.gain.aq, Ox.gain),
+         Ox.offset = ifelse(is.na(Ox.offset), Ox.offset.aq, Ox.offset),
+         NO2.gain = ifelse(is.na(NO2.gain), NO2.gain.aq, NO2.gain),
+         NO2.offset = ifelse(is.na(NO2.offset), NO2.offset.aq, NO2.offset),
+         NO.2.avalue = ifelse(is.na(NO.2.avalue), a.NO2.aq, NO.2.avalue)) %>%
+  mutate(O3_aq = O3.gain*(O3-O3.offset), Ox_aq = Ox.gain*(Ox-Ox.offset), NO2_int = Ox_aq - NO.2.avalue*O3_aq, NO2_aq = NO2.gain*(NO2_int-NO2.offset)) %>%
+  dplyr::select(Time, ID, proxy_site, O3, O3_pse, O3_aq, O3_proxy, NO2, NO2_pse, NO2_aq, NO2_proxy)
+  
+cal_proxy$timestamp <- ymd_hms(cal_proxy$Time)
+```
+
+```{r}
+plot_NO2 <- function(aqy_id){
+  calibration_plot <- ggplot(subset(cal_proxy, ID == aqy_id & timestamp >= '2020-07-01')) +
+    geom_line(aes(x = timestamp, y = NO2_proxy, color = paste('Proxy Site:', proxy_site))) +
+    geom_line(aes(x = timestamp, y = NO2, color = 'Raw AQY')) +
+    geom_line(aes(x = timestamp, y = NO2_aq, color = 'Aeroqual Calibrated')) +
+    geom_line(aes(x = timestamp, y = NO2_pse, color = 'PSE Calibrated')) +
+    labs(title = paste('NO2 Calibration Results:', aqy_id)) +
+    xlab('Date and Time') + ylab('NO2 (ppb)') + theme(legend.title = element_text(color = 'white'))
+    theme(plot.title = element_text(hjust = .5))
+  
+  return(calibration_plot)
+}
+
+all_aqys <- unique(cal_proxy$ID)
+all_aqys <- all_aqys[-14]
+
+suppressWarnings(lapply(all_aqys, plot_NO2))
+```
+
+```{r}
+plot_O3 <- function(aqy_id){
+  
+  calibration_plot <- ggplot(subset(cal_proxy, ID == aqy_id & timestamp >= '2020-07-01')) +
+    geom_line(aes(x = timestamp, y = O3_aq, color = 'Aeroqual Calibrated')) +
+    geom_line(aes(x = timestamp, y = O3_pse, color = 'PSE Calibrated')) +
+    geom_line(aes(x = timestamp, y = O3_proxy, color = paste(proxy_site))) +
+    geom_line(aes(x = timestamp, y = O3, color = 'Raw AQY')) +
+    scale_color_manual(name = 'Data Source', values = c('coral', 'green', 'purple', 'cyan3'), aesthetics = 'color') +
+    labs(title = paste('O3 Calibration Results:', aqy_id)) +
+    xlab('Date and Time') + ylab('O3 (ppb)') +
+    theme(plot.title = element_text(hjust = .5))
+  
+  return(calibration_plot)
+}
+
+all_aqys <- unique(cal_proxy$ID)
+
+lapply(all_aqys, plot_O3)
+```
+
+
+
+
+
+
+
+
+
+
+
+
