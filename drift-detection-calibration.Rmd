@@ -73,8 +73,8 @@ find_starttime_proxy_request <- function(existing_proxy_data){
 ```{r}
 build_proxy_request_url <- function(pollutant, start_request){
   
-  month_after_start <- suppressWarnings(as.character(ymd_hms(start_request) + td_30_days))
-  if(is.na(month_after_start)){month_after_start <- paste(as.character(as.Date(start_request) + td_30_days), '00:00:00')}
+  month_after_start <- suppressWarnings(as.character(ymd_hms(start_request) + td_30day))
+  if(is.na(month_after_start)){month_after_start <- paste(as.character(as.Date(start_request) + td_30day), '00:00:00')}
 
   yesterday <- as.character(Sys.time() - 60*60*24)
   
@@ -159,8 +159,8 @@ get_current_proxy_data <- function(pollutant){
     
     proxy_data <- rbind(proxy_data, new_proxy_data)
     
-    month_after_last_start <- as.character(ymd_hms(request_start_time) + td_30_days + td_hour)
-    if(is.na(month_after_last_start)){month_after_last_start <- paste(as.character(as.Date(request_start_time) + td_30_days), '01:00:00')}
+    month_after_last_start <- as.character(ymd_hms(request_start_time) + td_30day + td_hour)
+    if(is.na(month_after_last_start)){month_after_last_start <- paste(as.character(as.Date(request_start_time) + td_30day), '01:00:00')}
     
     request_start_time <- min(as.character(Sys.time() - td_day), month_after_last_start)
   }
@@ -262,21 +262,21 @@ calculate_offset <- function(joined_data){
 ```{r}
 detect_drift <- function(joined_data_72hr){
           
-          ID <- unique(joined_data_72hr$ID)
+  ID <- unique(joined_data_72hr$ID)
           
-          ks_new <- run_ks_test(joined_data_72hr)
-          gain_new <- calculate_gain(joined_data_72hr)
-          offset_new <- calculate_offset(joined_data_72hr)
-          missing_new <- ifelse(nrow(joined_data_72hr) <= 0.75*72, 1, 0)
-          extreme_new <- 0
-          # add test for extreme values relative to rest of data distribution
+  ks_new <- run_ks_test(joined_data_72hr)
+  gain_new <- calculate_gain(joined_data_72hr)
+  offset_new <- calculate_offset(joined_data_72hr)
+  missing_new <- ifelse(nrow(joined_data_72hr) <= 0.75*72, 1, 0)
+  extreme_new <- 0
+  # add test for extreme values relative to rest of data distribution
           
-          new_flags <- as.data.frame(cbind(ID, ks_new, gain_new, offset_new, missing_new, extreme_new)) %>%
-            mutate_at(.vars = c('ks_new', 'gain_new', 'offset_new', 'missing_new', 'extreme_new'), .funs = as.integer)
+  new_flags <- as.data.frame(cbind(ID, ks_new, gain_new, offset_new, missing_new, extreme_new)) %>%
+  mutate_at(.vars = c('ks_new', 'gain_new', 'offset_new', 'missing_new', 'extreme_new'), .funs = as.integer)
           
-          print(new_flags)
+  print(new_flags)
       
-      return(new_flags)
+  return(new_flags)
 }
 ```
 
@@ -345,9 +345,30 @@ recalibrate_O3 <- function(joined_data_30day){
 ```
 
 ```{r}
+combine_new_and_old_params <- function(new_params){
+  old_params_path <- list.files('results', 'OZONE*', full.names = T, recursive = F)
+  
+  old_params <- read.csv(old_params_path)
+  
+  aqy_metadata <- select(old_params, c('ID', 'deployment_date', 'deployment_datetime', 'Longitude', 'Latitude', 'proxy_site', 'start_date', 'end_date'))
+  
+  new_params <- full_join(aqy_metadata, new_params, by = 'ID') %>%
+    na.omit() %>%
+    mutate(start_date = '2021-07-08 11:00:00', end_date = '2199-12-31 23:59:59')
 
+  combined_params <- rbind(old_params, new_params) %>%
+    arrange(ID, start_date)
+  
+  return(combined_params)
+}
 ```
 
+```{r}
+new_params <- data.frame('AQY BB-633', 5, 4)
+colnames(new_params) <- c('ID', 'O3.gain', 'O3.offset')
+
+combine_new_and_old_params(new_params)
+```
 
 ```{r}
 O3_proxy <- get_current_proxy_data('OZONE')
@@ -379,11 +400,8 @@ check_drift_calibrate_data <- function(aqy_data, proxy_data){
   
   return(new_params)
 }
-
-check_drift_calibrate_data(aqy_data, O3_proxy)
-
-
 ```
+
 
 
 
@@ -568,23 +586,6 @@ calibrate_monitors <- function(start_72, pollutant){
 }
 ```
 
-### RUN FUNCTION FOR ALL DAYS BACK TO LAST RE-CALIBRATION
-```{r}
-#last_run_O3 <- fix_midnight(read.csv('results/last_start/start_72_OZONE.csv', stringsAsFactors = F))
-#last_run_NO2 <- fix_midnight(read.csv('results/last_start/start_72_NO2.csv', stringsAsFactors = F))
-
-run_this_hour_O3 <- fix_midnight(as.character(ymd_hms('2020-06-03 00:00:00') + 60*60))
-run_this_hour_NO2 <- fix_midnight(as.character(ymd_hms('2020-06-03 00:00:00') + 60*60))
-
-yesterday_date <- Sys.Date()-1
-yesterday_11pm <- paste(yesterday_date, '23:00:00')
-
-#run_these_times_O3 <- as.character(seq(from = ymd_hms(run_this_hour_O3), to = ymd_hms(yesterday_11pm), 60*60))
-run_these_times_NO2 <- as.character(seq(from = ymd_hms(run_this_hour_NO2), to = ymd_hms(yesterday_11pm), 60*60))
-
-#lapply(run_these_times_O3, calibrate_monitors, pollutant = 'OZONE')
-lapply(run_these_times_NO2, calibrate_monitors, pollutant = 'NO2')
-```
 
 
 
