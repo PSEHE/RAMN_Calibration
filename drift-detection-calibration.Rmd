@@ -19,10 +19,6 @@ library(stringr)
 library(CVXR)
 ```
 
-####################################################
-# Get Proxy Data
-####################################################
-
 ```{r}
 td_hour <- 60*60
 td_day <- td_hour*24
@@ -30,6 +26,19 @@ td_30day <- td_day*30
 td_72hr <- 60*60*72
 td_5day <- 60*60*24*5
 ```
+
+```{r}
+format_timestamp <- function(timestamp){
+  
+  formatted_timestamp <- as.character(format(as.POSIXct(timestamp), '%Y-%m-%d %H:%M:%S'))
+  
+  return(formatted_timestamp)
+}
+```
+
+####################################################
+# Get Proxy Data
+####################################################
 
 ```{r}
 get_existing_proxy_data <- function(pollutant){
@@ -51,9 +60,9 @@ get_existing_proxy_data <- function(pollutant){
 ```{r}
 find_starttime_proxy_request <- function(existing_proxy_data){
   
-  ramn_start_time <- '2019-12-01 00:00:00'
-  yesterday <- as.character(Sys.time() - td_day)
-  right_now <- as.character(round(Sys.time(), 'hour'))
+  ramn_start_time <- format_timestamp('2019-12-01 00:00:00')
+  yesterday <- format_timestamp(Sys.time() - td_day)
+  right_now <- format_timestamp(round(Sys.time(), 'hour'))
   
   if(nrow(existing_proxy_data) > 0){timestamps_existing <- unique(existing_proxy_data$timestamp)}
     else{print('No existing data - requesting all starting Dec 2019')
@@ -61,7 +70,7 @@ find_starttime_proxy_request <- function(existing_proxy_data){
   
   last_timestamp_recorded <- max(timestamps_existing)
   
-  next_timestamp_needed <- as.character(ymd_hms(last_timestamp_recorded) + td_hour)
+  next_timestamp_needed <- format_timestamp(ymd_hms(last_timestamp_recorded) + td_hour)
   
   print(paste('Requesting data starting with', next_timestamp_needed))
   
@@ -119,13 +128,34 @@ request_new_proxy_data <- function(request_url){
 ```{r}
 clean_new_proxy_data <- function(new_proxy_data){
 
-   random_noise <- runif(nrow(new_proxy_data), .000001, .00001)
+   random_noise <- runif(nrow(new_proxy_data), .000001, .0001)
    new_proxy_data$proxy_rand <- new_proxy_data$RawConcentration + random_noise
     
    new_proxy_clean <- dplyr::select(new_proxy_data, -c(UTC, Value, AgencyName, FullAQSCode, IntlAQSCode)) %>% 
      rename('lat'='Latitude', 'long'='Longitude', 'modality'='Parameter', 'units'='Unit', 'proxy_raw'='RawConcentration', 'proxy_site' = 'SiteName')
 
    return(new_proxy_clean)
+}
+```
+
+```{r}
+request_all_dates_needed <- function(pollutant, request_start_time, existing_proxy_data){
+  
+  while(request_start_time < as.character(Sys.time() - td_day)){  
+    
+      request_url <- build_proxy_request_url(pollutant, request_start_time)
+      
+      new_proxy_data_raw <- request_new_proxy_data(request_url)
+      new_proxy_data <- clean_new_proxy_data(new_proxy_data_raw)
+      
+      existing_proxy_data <- rbind(existing_proxy_data, new_proxy_data)
+      
+      month_after_last_start <- format_timestamp(ymd_hms(request_start_time) + td_30day + td_hour)
+      
+      request_start_time <- min(format_timestamp(Sys.time() - td_day), month_after_last_start)
+  }
+  
+  return(existing_proxy_data)
 }
 ```
 
@@ -146,31 +176,22 @@ process_and_write_proxy_data <- function(pollutant, proxy_data){
 ```{r}
 get_current_proxy_data <- function(pollutant){
   
-  proxy_data <- get_existing_proxy_data(pollutant)
+  existing_proxy_data <- get_existing_proxy_data(pollutant)
 
-  request_start_time <- find_starttime_proxy_request(proxy_data)
+  request_start_time <- find_starttime_proxy_request(existing_proxy_data)
 
-  while(request_start_time < as.character(Sys.time() - td_day)){  
+  updated_proxy_data_raw <- request_all_dates_needed(pollutant, request_start_time, existing_proxy_data)
   
-    request_url <- build_proxy_request_url(pollutant, request_start_time)
-    
-    new_proxy_data_raw <- request_new_proxy_data(request_url)
-    new_proxy_data <- clean_new_proxy_data(new_proxy_data_raw)
-    
-    proxy_data <- rbind(proxy_data, new_proxy_data)
-    
-    month_after_last_start <- as.character(ymd_hms(request_start_time) + td_30day + td_hour)
-    if(is.na(month_after_last_start)){month_after_last_start <- paste(as.character(as.Date(request_start_time) + td_30day), '01:00:00')}
-    
-    request_start_time <- min(as.character(Sys.time() - td_day), month_after_last_start)
-  }
-  
-  updated_proxy_data <- process_and_write_proxy_data(pollutant, proxy_data)
+  updated_proxy_data <- process_and_write_proxy_data(pollutant, existing_proxy_data)
   
   return(updated_proxy_data)
   
 }
 ```
+
+####################################################
+# Get AQY Data
+####################################################
 
 ```{r}
 read_aqy_data <- function(){
@@ -191,17 +212,28 @@ read_aqy_data <- function(){
 }
 ```
 
-#######################################
-# Detect Drift
-#######################################
+```{r}
+calibrate_aqy_data <- function(aqy_data){
+  
+  all_params_paths <- list.files('results', 'OZONE*', full.names = T)
+  current_params_path <- all_params_paths[length(all_params_paths)]
+  current_params <- read.csv(current_params_path)
+  
+  calibrated_data <- inner_join(current_params, aqy_data, by = 'ID') %>%
+    filter(timestamp >= deployment_datetime & timestamp >= start_date & timestamp <= end_date) %>%
+    mutate(O3 = O3.gain*(O3-O3.offset))
+  
+  return(calibrated_data)
+  
+}
+```
 
 ```{r}
 filter_and_join_data <- function(aqy_data, proxy_data, start_time, td_add_to_start){
   
-  joined_data <- inner_join(aqy_data, proxy_data, by = 'timestamp') %>%
-    filter(proxy_site == 'San Pablo - Rumrill') %>%
-    filter(ID == 'AQY BB-633' & timestamp < '2021') %>%
-    filter(timestamp < as.character(ymd_hms(start_time) + td_add_to_start)) %>%
+  joined_data <- inner_join(aqy_data, proxy_data, by = c('timestamp', 'proxy_site')) %>%
+    filter(ID %in% c('AQY BB-633', 'AQY BB-643') & timestamp < '2021') %>%
+    filter(timestamp < format_timestamp(ymd_hms(start_time) + td_add_to_start)) %>%
     na.omit()
   
   return(joined_data)
@@ -209,72 +241,26 @@ filter_and_join_data <- function(aqy_data, proxy_data, start_time, td_add_to_sta
 }
 ```
 
-```{r}
-run_ks_test <- function(joined_data){
-  
-  proxy_values <- joined_data$proxy_rand
-  aqy_values <- joined_data$O3_raw
-  
-  ks_results <- suppressWarnings(ks.test(proxy_values, aqy_values, exact = F))
-    
-  ks_p <- ks_results$p.value
-  print(paste('KS Test P-val:', ks_p))
-  
-  ks_flag <- ifelse(ks_p <= 0.05, 1, 0)
-  
-  return(ks_flag)
-  
-}
-```
-
-```{r}
-calculate_gain <- function(joined_data){
-  
-  proxy_values <- joined_data$proxy_rand
-  aqy_values <- joined_data$O3_raw
-  
-  manual_gain <- sqrt(var(proxy_values)/var(aqy_values))
-  print(paste('Manual gain:', manual_gain))
-  
-  gain_flag <- ifelse(manual_gain > 1.3 | manual_gain < .7, 1, 0)
-  
-  return(gain_flag)
-  
-}
-```
-
-```{r}
-calculate_offset <- function(joined_data){
-  
-  proxy_values <- joined_data$proxy_rand
-  aqy_values <- joined_data$O3_raw
-  
-  manual_offset <- sqrt(var(proxy_values)/var(aqy_values))
-  print(paste('Manual offset:', manual_offset))
-  
-  offset_flag <- ifelse(manual_offset > 1.3 | manual_offset < .7, 1, 0)
-  
-  return(offset_flag)
-  
-}
-```
+#######################################
+# Detect Drift
+#######################################
 
 ```{r}
 detect_drift <- function(joined_data_72hr){
           
-  ID <- unique(joined_data_72hr$ID)
+  drift_tests <- group_by(joined_data, ID) %>%
+    summarize(manual_gain = sqrt(var(proxy_rand)/var(O3)),
+              manual_offset = mean(proxy_rand) - manual_gain*mean(O3),
+              ks_p = suppressWarnings(ks.test(proxy_rand, O3, exact = F))$p.value)
+  
+  drift_flags <- mutate(drift_tests,
+                        gain_new = ifelse(manual_gain >= 1.3 | manual_gain <= .7, 1, 0),
+                        offset_new = ifelse(manual_offset >= 5 | manual_offset <= -5, 1, 0),
+                        ks_new = ifelse(ks_p <= .05, 1, 0))
+                        # add test for extreme values relative to rest of data distribution
           
-  ks_new <- run_ks_test(joined_data_72hr)
-  gain_new <- calculate_gain(joined_data_72hr)
-  offset_new <- calculate_offset(joined_data_72hr)
-  missing_new <- ifelse(nrow(joined_data_72hr) <= 0.75*72, 1, 0)
-  extreme_new <- 0
-  # add test for extreme values relative to rest of data distribution
-          
-  new_flags <- as.data.frame(cbind(ID, ks_new, gain_new, offset_new, missing_new, extreme_new)) %>%
-  mutate_at(.vars = c('ks_new', 'gain_new', 'offset_new', 'missing_new', 'extreme_new'), .funs = as.integer)
-          
-  print(new_flags)
+  new_flags <- dplyr::select(drift_flags, -c('manual_gain', 'manual_offset', 'ks_p')) %>%
+    mutate_at(.vars = c('ks_new', 'gain_new', 'offset_new'), .funs = as.integer)
       
   return(new_flags)
 }
@@ -284,7 +270,6 @@ detect_drift <- function(joined_data_72hr){
 sum_old_and_new_flags <- function(pollutant, new_flags){
   
   flag_path <- paste0('results/running_flags/running_flags_', pollutant, '.csv')
-  
   existing_flags <- read.csv(flag_path, stringsAsFactors = F)
   
   joined_flags <- full_join(existing_flags, new_flags, by = 'ID')
@@ -314,28 +299,38 @@ check_for_five_days_of_flags <- function(summed_flags){
   
   summed_flags$max_flag <- largest_running_flag
   
-  aqy_with_five_flags <- filter(summed_flags, max_flag >= 24*5) %>%
+  largest_flag_network <- max(largest_running_flag)
+  
+  print(paste('Largest flag:', largest_flag_network))
+  
+  aqy_with_five_days_of_flags <- filter(summed_flags, max_flag >= 24*5) %>%
     pull(ID)
   
-  return(aqy_with_five_flags)
+  return(aqy_with_five_days_of_flags)
   
 }
 ```
 
 #######################################
-# Recalibrate Data
+# Recalibrate Data - OZONE
 #######################################
 
 ```{r}
 recalibrate_O3 <- function(joined_data_30day){
   
-  O3.gain <- sqrt(var(joined_data_30day$proxy_rand) / var(joined_data_30day$O3_raw))
-  O3.offset <- mean(joined_data_30day$proxy_rand) - O3.gain*mean(joined_data_30day$O3_raw)
+  O3.gain.squared <- var(joined_data_30day$proxy_rand) / var(joined_data_30day$O3)
+  print(O3.gain.squared)
+  
+  O3.gain <- sqrt(O3.gain.squared)
+  O3.offset <- mean(joined_data_30day$proxy_rand) - O3.gain*mean(joined_data_30day$O3)
   
   aqy_id <- 'AQY BB-633'
   
+  print(paste('New gain:', O3.gain, '| New offset:', O3.offset))
+  
   # Combined results
   O3_params <- as.data.frame(cbind(aqy_id, O3.gain, O3.offset))
+  colnames(O3_params) <- c('ID', 'O3.gain', 'O3.offset')
   
   print(paste0(aqy_id, ': ', 'new offset', O3.offset, ', new gain ', O3.gain))
 
@@ -345,30 +340,73 @@ recalibrate_O3 <- function(joined_data_30day){
 ```
 
 ```{r}
-combine_new_and_old_params <- function(new_params){
-  old_params_path <- list.files('results', 'OZONE*', full.names = T, recursive = F)
+combine_new_and_old_params <- function(new_params, start_time_rolling_72hr){
   
-  old_params <- read.csv(old_params_path)
+  old_params_path_all <- list.files('results', 'OZONE*', full.names = T, recursive = F)
+  old_params_path_newest <- old_params_path_all[length(old_params_path_all)]
+  old_params <- read.csv(old_params_path_newest)
   
   aqy_metadata <- select(old_params, c('ID', 'deployment_date', 'deployment_datetime', 'Longitude', 'Latitude', 'proxy_site', 'start_date', 'end_date'))
   
   new_params <- full_join(aqy_metadata, new_params, by = 'ID') %>%
     na.omit() %>%
-    mutate(start_date = '2021-07-08 11:00:00', end_date = '2199-12-31 23:59:59')
+    mutate(start_date = format_timestamp(start_time_rolling_72hr), end_date = '2199-12-31 23:59:59')
 
   combined_params <- rbind(old_params, new_params) %>%
-    arrange(ID, start_date)
+    arrange(ID, start_date) %>%
+    group_by(ID) %>%
+    mutate(end_date = ifelse(end_date == '2199-12-31 23:59:59' & start_date != max(start_date), format_timestamp(max(start_date) - td_hour), end_date)) %>%
+    unique()
+  
+  timestamp_filepath <- str_remove_all(format_timestamp(start_time_rolling_72hr), '\\:')
+  new_param_file <- paste0('results/OZONE_calvals_', timestamp_filepath, '.csv')
+  write.csv(combined_params, new_param_file, row.names = F)
   
   return(combined_params)
 }
 ```
 
 ```{r}
-new_params <- data.frame('AQY BB-633', 5, 4)
-colnames(new_params) <- c('ID', 'O3.gain', 'O3.offset')
-
-combine_new_and_old_params(new_params)
+reset_flags_after_calibration <- function(){
+  
+  read.csv('results/running_flags/running_flags_OZONE.csv') %>%
+    mutate_at(.vars = c('ks', 'gain', 'offset', 'missing', 'extreme'), .funs = ~.x*0) %>%
+    write.csv('results/running_flags/running_flags_OZONE.csv', row.names = F)
+  
+  print('Reset flags - restarting drift detection at zero')
+}
 ```
+
+```{r}
+check_drift_calibrate_data <- function(aqy_data, proxy_data, start_time_rolling_72hr){
+  
+  aqy_data <- calibrate_aqy_data(aqy_data)
+  
+  start_time_recalibration <- as.character(ymd_hms(start_time_rolling_72hr) - td_30day)
+  joined_data_72hr <- filter_and_join_data(aqy_data, O3_proxy, start_time_rolling_72hr, td_72hr)
+  
+  print(paste('Performing drift detection for', start_time_rolling_72hr))
+  
+  flags_72hr <- detect_drift(joined_data_72hr)
+  summed_flags <- sum_old_and_new_flags('OZONE', flags_72hr)
+  aqys_with_five_flags <- check_for_five_days_of_flags(summed_flags)
+  
+  if(length(aqys_with_five_flags) < 1){return(print('No monitors require recalibration for this 72-hr period'))}
+    else{print('Recalibrating monitors')
+  
+    joined_data_30day <- filter_and_join_data(aqy_data, O3_proxy, start_time_recalibration, td_30day)
+    new_params <- recalibrate_O3(joined_data_30day)
+    combined_updated_params <- combine_new_and_old_params(new_params, start_time_rolling_72hr)
+    reset_flags_after_calibration()
+  
+    return(combined_updated_params)
+    }
+}
+```
+
+#######################################
+# Run Everything
+#######################################
 
 ```{r}
 O3_proxy <- get_current_proxy_data('OZONE')
@@ -377,35 +415,6 @@ PM25_proxy <- get_current_proxy_data('PM25')
 
 aqy_data <- read_aqy_data()
 ```
-
-```{r}
-check_drift_calibrate_data <- function(aqy_data, proxy_data){
-  
-  start_time_rolling_72hr <- '2020-07-01 08:00:00'
-  start_time_recalibration <- as.character(ymd_hms(start_time_rolling_72hr) - td_30day)
-  
-  joined_data_72hr <- filter_and_join_data(aqy_data, O3_proxy, '2020-07-01 08:00:00', td_72hr)
-  joined_data_30day <- filter_and_join_data(aqy_data, O3_proxy, '2020-07-01 08:00:00', td_30day)
-  
-  print(paste('Performing drift detection for', start_time_rolling_72hr))
-  flags_72hr <- detect_drift(joined_data_72hr)
-  
-  summed_flags <- sum_old_and_new_flags('OZONE', flags_72hr)
-  
-  aqys_with_five_flags <- check_for_five_days_of_flags(summed_flags)
-  
-  if(length(aqys_with_five_flags) < 1){return(print('No monitors require recalibration for this 72-hr period'))}
-  
-  new_params <- recalibrate_O3(joined_data_30day)
-  
-  return(new_params)
-}
-```
-
-
-
-
-
 
 
 
@@ -436,7 +445,7 @@ recalibrate_NO2 <- function(aqy_id, thirty_day_aqy, thirty_day_proxy){
     b2 <- Variable(1)
 
     cno2 <- recal_filter$Ox - b1*recal_filter$O3_cal
-    pno2 <- recal_filter$proxy_raw
+    pno2 <- recal_filter$proxy
 
     kl <- kl_div(pno2, cno2)
     kl_obj <- sum(kl)
@@ -541,8 +550,8 @@ calibrate_monitors <- function(start_72, pollutant){
   proxy_data_720 <- check_existing_proxy_fill_gaps(pollutant, start_recal)
   proxy_data_72 <- filter(proxy_data_720, timestamp >= start_72 & timestamp <= end_72)
   
-  aqy_data_720_raw <- read_aqy_data(pollutant, start_recal, end_recal)
-  aqy_data_720 <- calibrate_with_old_params(pollutant, aqy_data_720_raw)
+  aqy_data_720 <- read_aqy_data(pollutant, start_recal, end_recal)
+  aqy_data_720 <- calibrate_with_old_params(pollutant, aqy_data_720)
   aqy_data_72 <- filter(aqy_data_720, timestamp >= start_72 & timestamp <= end_72)
   
   ### DETECT MONITOR DRIFT ###
