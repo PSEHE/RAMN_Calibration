@@ -173,6 +173,7 @@ process_and_write_proxy_data <- function(pollutant, proxy_data){
 }
 ```
 
+_Final Proxy Function_
 ```{r}
 get_current_proxy_data <- function(pollutant){
   
@@ -232,7 +233,7 @@ calibrate_aqy_data <- function(aqy_data){
 filter_and_join_data <- function(aqy_data, proxy_data, start_time, td_add_to_start){
   
   joined_data <- inner_join(aqy_data, proxy_data, by = c('timestamp', 'proxy_site')) %>%
-    filter(ID %in% c('AQY BB-633', 'AQY BB-643') & timestamp < '2021') %>%
+    filter(ID %in% c('AQY BB-633', 'AQY BB-642') & timestamp < '2021') %>%
     filter(timestamp < format_timestamp(ymd_hms(start_time) + td_add_to_start)) %>%
     na.omit()
   
@@ -251,7 +252,8 @@ detect_drift <- function(joined_data_72hr){
   drift_tests <- group_by(joined_data, ID) %>%
     summarize(manual_gain = sqrt(var(proxy_rand)/var(O3)),
               manual_offset = mean(proxy_rand) - manual_gain*mean(O3),
-              ks_p = suppressWarnings(ks.test(proxy_rand, O3, exact = F))$p.value)
+              ks_p = suppressWarnings(ks.test(proxy_rand, O3, exact = F))$p.value, 
+              .groups = 'drop_last')
   
   drift_flags <- mutate(drift_tests,
                         gain_new = ifelse(manual_gain >= 1.3 | manual_gain <= .7, 1, 0),
@@ -282,9 +284,7 @@ sum_old_and_new_flags <- function(pollutant, new_flags){
     transmute(ID = ID, 
               ks = sum_if_flagged(ks, ks_new),
               gain = sum_if_flagged(gain, gain_new),
-              offset = sum_if_flagged(offset, offset_new),
-              missing = sum_if_flagged(missing, missing_new),
-              extreme = sum_if_flagged(extreme, extreme_new))
+              offset = sum_if_flagged(offset, offset_new))
   
   write.csv(summed_flags, flag_path, row.names = F)
   
@@ -293,7 +293,7 @@ sum_old_and_new_flags <- function(pollutant, new_flags){
 ```
 
 ```{r}
-check_for_five_days_of_flags <- function(summed_flags){
+get_aqys_needing_recal <- function(summed_flags){
   
   largest_running_flag <- apply(X = summed_flags[2:ncol(summed_flags)], MARGIN = 1, FUN = max)
   
@@ -303,10 +303,10 @@ check_for_five_days_of_flags <- function(summed_flags){
   
   print(paste('Largest flag:', largest_flag_network))
   
-  aqy_with_five_days_of_flags <- filter(summed_flags, max_flag >= 24*5) %>%
+  aqys_needing_recal <- filter(summed_flags, max_flag >= 24*5) %>%
     pull(ID)
   
-  return(aqy_with_five_days_of_flags)
+  return(aqys_needing_recal)
   
 }
 ```
@@ -316,48 +316,40 @@ check_for_five_days_of_flags <- function(summed_flags){
 #######################################
 
 ```{r}
-recalibrate_O3 <- function(joined_data_30day){
+recalibrate_O3 <- function(joined_data_30day, aqys_needing_recal){
   
-  O3.gain.squared <- var(joined_data_30day$proxy_rand) / var(joined_data_30day$O3)
-  print(O3.gain.squared)
-  
-  O3.gain <- sqrt(O3.gain.squared)
-  O3.offset <- mean(joined_data_30day$proxy_rand) - O3.gain*mean(joined_data_30day$O3)
-  
-  aqy_id <- 'AQY BB-633'
-  
-  print(paste('New gain:', O3.gain, '| New offset:', O3.offset))
-  
-  # Combined results
-  O3_params <- as.data.frame(cbind(aqy_id, O3.gain, O3.offset))
-  colnames(O3_params) <- c('ID', 'O3.gain', 'O3.offset')
-  
-  print(paste0(aqy_id, ': ', 'new offset', O3.offset, ', new gain ', O3.gain))
+  O3_params <- filter(joined_data_30day, ID %in% aqys_needing_recal) %>%
+    group_by(ID) %>%
+    summarize(O3.gain = sqrt(var(proxy_rand)/var(O3)),
+              O3.offset = mean(proxy_rand) - O3.gain*mean(O3))
 
   return(O3_params)
   
   }
 ```
 
+Throwing error here on end date - needs fix
 ```{r}
 combine_new_and_old_params <- function(new_params, start_time_rolling_72hr){
   
   old_params_path_all <- list.files('results', 'OZONE*', full.names = T, recursive = F)
   old_params_path_newest <- old_params_path_all[length(old_params_path_all)]
   old_params <- read.csv(old_params_path_newest)
-  
+
   aqy_metadata <- select(old_params, c('ID', 'deployment_date', 'deployment_datetime', 'Longitude', 'Latitude', 'proxy_site', 'start_date', 'end_date'))
-  
+
   new_params <- full_join(aqy_metadata, new_params, by = 'ID') %>%
-    na.omit() %>%
     mutate(start_date = format_timestamp(start_time_rolling_72hr), end_date = '2199-12-31 23:59:59')
 
   combined_params <- rbind(old_params, new_params) %>%
+    unique() %>%
+    na.omit() %>%
     arrange(ID, start_date) %>%
     group_by(ID) %>%
-    mutate(end_date = ifelse(end_date == '2199-12-31 23:59:59' & start_date != max(start_date), format_timestamp(max(start_date) - td_hour), end_date)) %>%
-    unique()
-  
+    mutate(end_date = ifelse(end_date == '2199-12-31 23:59:59' & start_date != max(start_date), 
+                             max(start_date) - td_hour, 
+                             end_date))
+
   timestamp_filepath <- str_remove_all(format_timestamp(start_time_rolling_72hr), '\\:')
   new_param_file <- paste0('results/OZONE_calvals_', timestamp_filepath, '.csv')
   write.csv(combined_params, new_param_file, row.names = F)
@@ -370,7 +362,7 @@ combine_new_and_old_params <- function(new_params, start_time_rolling_72hr){
 reset_flags_after_calibration <- function(){
   
   read.csv('results/running_flags/running_flags_OZONE.csv') %>%
-    mutate_at(.vars = c('ks', 'gain', 'offset', 'missing', 'extreme'), .funs = ~.x*0) %>%
+    mutate_at(.vars = c('ks', 'gain', 'offset'), .funs = ~.x*0) %>%
     write.csv('results/running_flags/running_flags_OZONE.csv', row.names = F)
   
   print('Reset flags - restarting drift detection at zero')
@@ -389,14 +381,15 @@ check_drift_calibrate_data <- function(aqy_data, proxy_data, start_time_rolling_
   
   flags_72hr <- detect_drift(joined_data_72hr)
   summed_flags <- sum_old_and_new_flags('OZONE', flags_72hr)
-  aqys_with_five_flags <- check_for_five_days_of_flags(summed_flags)
+  aqys_needing_recal <- get_aqys_needing_recal(summed_flags)
   
-  if(length(aqys_with_five_flags) < 1){return(print('No monitors require recalibration for this 72-hr period'))}
+  if(length(aqys_needing_recal) < 1){return(print('No monitors require recalibration for this 72-hr period'))}
     else{print('Recalibrating monitors')
   
     joined_data_30day <- filter_and_join_data(aqy_data, O3_proxy, start_time_recalibration, td_30day)
-    new_params <- recalibrate_O3(joined_data_30day)
+    new_params <- recalibrate_O3(joined_data_30day, aqys_needing_recal)
     combined_updated_params <- combine_new_and_old_params(new_params, start_time_rolling_72hr)
+    
     reset_flags_after_calibration()
   
     return(combined_updated_params)
@@ -416,7 +409,16 @@ PM25_proxy <- get_current_proxy_data('PM25')
 aqy_data <- read_aqy_data()
 ```
 
+```{r}
+timestamps <- filter(aqy_data, ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
+  pull(timestamp) %>%
+  unique()
 
+for(timestamp in timestamps){
+  print(timestamp)
+  check_drift_calibrate_data(aqy_data, O3_proxy, format_timestamp(timestamp))
+}
+```
 
 
 
@@ -504,8 +506,6 @@ process_new_params <- function(pollutant, new_params_list, first_day_rolling_72)
 }
 ```
 
-
-
 ```{r}
 combine_old_and_new <- function(pollutant, new_params){
   
@@ -530,6 +530,8 @@ combine_old_and_new <- function(pollutant, new_params){
   return(running_params)
 }
 ```
+
+
 
 ### Drift Detection and Recalibration
 ```{r}
