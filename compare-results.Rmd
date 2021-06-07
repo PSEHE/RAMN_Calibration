@@ -1,0 +1,138 @@
+---
+title: "Compare Results"
+author: "Audrey Smith"
+date: "6/4/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+```
+
+```{r}
+calibrated_aq <- read.csv("raw_data/calibrated_sixty_min_2021-06-04.csv") %>%
+  mutate(Time = as.character(ymd_hms(Time) + 8*60*60))
+
+all_params_paths <- list.files('results', 'OZONE*', full.names = T)
+current_params_path <- all_params_paths[length(all_params_paths)]
+params <- read.csv(current_params_path)
+
+calibrated_aq_pse <- inner_join(params, calibrated_aq, by = 'ID') %>%
+  filter(Time >= start_date & Time <= end_date & Time >= deployment_datetime & Time < 2021) %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
+  transmute(ID = ID, 
+            Time = Time, 
+            TEMP = TEMP, 
+            RH = RH, 
+            NO2 = NO2, 
+            O3_raw = O3_raw, 
+            O3_aq = O3, 
+            O3_pse = round(O3.gain*O3_raw + O3.offset, 2))
+
+proxy_data <- read.csv("results/proxy/OZONE_proxy_data.csv") %>%
+  filter(proxy_site == 'San Pablo - Rumrill') %>%
+  dplyr::select(timestamp, proxy_raw) %>%
+  rename('Time'='timestamp', 'O3_proxy'='proxy_raw')
+
+O3_data <- inner_join(calibrated_aq_pse, proxy_data, by = 'Time') %>%
+  mutate(timestamp = ymd_hms(Time), .after = 'Time')
+
+#write.csv(O3_data, 'O3_calibration_2021-06-04.csv', row.names = F)
+```
+
+```{r}
+plot_calibration_results <- function(aqy_id){
+  
+  time_series <- O3_data %>%
+    filter(timestamp >= '2020-09-25' & timestamp <= '2020-09-30') %>%
+    filter(ID == aqy_id) %>%
+    ggplot() +
+    geom_line(aes(x = timestamp, y = O3_proxy), color = 'orange3') +
+    geom_line(aes(x = timestamp, y = O3_raw), color = 'black') +
+    geom_line(aes(x = timestamp, y = O3_aq), color = 'blue3') +
+    geom_line(aes(x = timestamp, y = O3_pse), color = 'cyan3')  +
+    ggtitle(paste('Results for', aqy_id)) 
+  
+  print(time_series)
+  
+  scatter_plot <- O3_data %>%
+    filter(ID == aqy_id) %>%
+    ggplot() +
+    geom_line(aes(x = O3_proxy, y = O3_proxy), color = 'black') +
+    geom_point(aes(x = O3_proxy, y = O3_raw), color = 'gray65', alpha = .5, size = 1) +
+    geom_point(aes(x = O3_proxy, y = O3_aq), color = 'blue3', alpha = .5, size = 1) +
+    geom_point(aes(x = O3_proxy, y = O3_pse), color = 'cyan3', alpha = .5, size = 1) +
+    ggtitle(paste('Results for', aqy_id))
+  
+  print(scatter_plot)
+  
+}
+  
+plot_calibration_results('AQY BB-633')  
+plot_calibration_results('AQY BB-642')
+```
+
+```{r}
+calculate_fit <- function(aqy_id){
+  
+  model_data <- filter(O3_data, ID == aqy_id)
+  
+  raw_lm <- summary(lm(data = model_data, formula = 'O3_raw~O3_proxy'))
+  pse_lm <- summary(lm(data = model_data, formula = 'O3_pse~O3_proxy'))
+  aq_lm <- summary(lm(data = model_data, formula = 'O3_aq~O3_proxy'))
+  
+  print(paste('Raw data:', round(raw_lm$r.squared, 4)))
+  print(paste('PSE calvals:', round(pse_lm$r.squared, 4)))
+  print(paste('Aeroqual calvals:', round(aq_lm$r.squared, 4)))
+}
+
+print('Results for AQY BB-633')
+calculate_fit('AQY BB-633')
+
+print('Results for AQY BB-642')
+calculate_fit('AQY BB-642')
+```
+
+```{r}
+params %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642') & start_date > '2020') %>%
+  ggplot() +
+  geom_line(aes(x = ymd_hms(start_date), y = O3.gain, color = ID)) +
+  ylim(c(0, 3.5))
+
+params %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642') & start_date > '2020') %>%
+  ggplot() +
+  geom_line(aes(x = ymd_hms(start_date), y = O3.offset, color = ID)) +
+  ylim(c(-50, 0))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

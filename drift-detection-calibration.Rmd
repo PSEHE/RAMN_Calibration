@@ -235,7 +235,7 @@ calibrate_aqy_data <- function(aqy_data){
   
   calibrated_data <- inner_join(current_params, aqy_data, by = 'ID') %>%
     filter(timestamp >= deployment_datetime & timestamp >= start_date & timestamp <= end_date) %>%
-    mutate(O3 = O3.gain*(O3-O3.offset))
+    mutate(O3 = O3.gain*O3_raw + O3.offset)
   
   return(calibrated_data)
   
@@ -349,8 +349,8 @@ recalibrate_O3 <- function(joined_data_30day, aqys_needing_recal){
   
   O3_params <- filter(joined_data_30day, ID %in% aqys_needing_recal) %>%
     group_by(ID) %>%
-    summarize(O3.gain = sqrt(var(proxy_rand)/var(O3)),
-              O3.offset = mean(proxy_rand) - O3.gain*mean(O3),
+    summarize(O3.gain = sqrt(var(proxy_rand)/var(O3_raw)),
+              O3.offset = mean(proxy_rand) - O3.gain*mean(O3_raw),
               .groups = 'drop_last')
   
   print(as.matrix(O3_params))
@@ -379,8 +379,6 @@ combine_new_and_old_params <- function(new_params, start_time_rolling_72hr){
     mutate(end_date = ifelse(end_date == '2199-12-31 23:59:59' & start_date != max(start_date), 
                              format_timestamp(ymd_hms(max(start_date)) - td_hour), 
                              end_date))
-  
-  print(combined_params)
 
   timestamp_for_path <- str_remove_all(format_timestamp(start_time_rolling_72hr), '\\:')
   new_param_path <- paste0('results/OZONE_calvals_', timestamp_for_path, '.csv')
@@ -443,13 +441,17 @@ check_drift_calibrate_data <- function(aqy_data, proxy_data, start_time_rolling_
 # Run Everything
 #######################################
 
+```{r}
 O3_proxy <- get_current_proxy_data('OZONE')
 NO2_proxy <- get_current_proxy_data('NO2')
 PM25_proxy <- get_current_proxy_data('PM25')
 
 aqy_data <- read_aqy_data()
+```
 
 ```{r}
+reset_flags()
+
 timestamps <- filter(aqy_data, ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
   pull(timestamp) %>%
   unique()
