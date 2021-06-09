@@ -37,13 +37,15 @@ format_timestamp <- function(timestamp){
 ```
 
 ```{r}
-reset_flags <- function(){
+reset_flags <- function(pollutant){
   
-  read.csv('results/running_flags/running_flags_OZONE.csv') %>%
+  file_with_flags <- paste0('results/running_flags/running_flags_', pollutant, '.csv')
+  
+  read.csv(file_with_flags) %>%
     mutate_at(.vars = c('ks', 'gain', 'offset'), .funs = ~.x*0) %>%
-    write.csv('results/running_flags/running_flags_OZONE.csv', row.names = F)
+    write.csv(file_with_flags, row.names = F)
   
-  print('Reset flags - restarting drift detection at zero')
+  print(paste0('Reset', pollutant, 'flags - restarting drift detection at zero'))
 }
 ```
 
@@ -129,7 +131,8 @@ request_new_proxy_data <- function(request_url){
   request_df <- fromJSON(request_json, simplifyDataFrame = TRUE)
   
   new_proxy_data <- mutate(request_df, 
-                           timestamp = paste0(substr(UTC, 1, 10), ' ', substr(UTC, 12, 16), ':00'), RawConcentration = ifelse(RawConcentration == -999, Value, RawConcentration))
+                           timestamp = paste0(substr(UTC, 1, 10), ' ', substr(UTC, 12, 16), ':00'), 
+                           RawConcentration = ifelse(RawConcentration == -999, Value, RawConcentration))
   
   return(new_proxy_data)
   
@@ -225,17 +228,37 @@ read_aqy_data <- function(){
 ```
 
 ```{r}
-calibrate_aqy_data <- function(aqy_data){
+get_current_params <- function(pollutant){
   
-  all_params_paths <- list.files('results', 'OZONE*', full.names = T)
+  all_params_paths <- list.files('results', paste0(pollutant, '*'), full.names = T)
   current_params_path <- all_params_paths[length(all_params_paths)]
   current_params <- read.csv(current_params_path)
   
-  print(paste('Calibrating data with params at', current_params_path))
+  print(paste('Calibrating with most recent', pollutant, 'params at', current_params_path))
   
-  calibrated_data <- inner_join(current_params, aqy_data, by = 'ID') %>%
+  return(current_params)
+  
+}
+```
+
+```{r}
+calibrate_aqy_data <- function(aqy_data, pollutant){
+  
+  params_O3 <- get_current_params('OZONE')
+  params_NO2 <- get_current_params('NO2')
+  
+  calibrated_data_O3 <- inner_join(params_O3, aqy_data, by = 'ID') %>%
     filter(timestamp >= deployment_datetime & timestamp >= start_date & timestamp <= end_date) %>%
-    mutate(O3 = O3.gain*O3_raw + O3.offset)
+    mutate(O3 = O3.offset + (O3.gain*O3_raw)) %>%
+    dplyr::select(ID, timestamp, TEMP, RH, DP, PM25, PM25_raw, O3, O3_raw, Ox, Ox_raw, NO2, NO2_raw)
+  
+  calibrated_data <- inner_join(params_NO2, calibrated_data_O3, by = 'ID') %>%
+    mutate(NO2 = NO2.offset + (NO2.gain*Ox_raw) - (NO2.a.value*O3))
+  
+  pollutant <- switch(pollutant, 'OZONE'='O3', 'NO2'='NO2')
+  
+  new_col_names <- str_replace_all(string = colnames(calibrated_data), pattern = pollutant, replacement = 'pollutant')
+  colnames(calibrated_data) <- new_col_names
   
   return(calibrated_data)
   
@@ -449,8 +472,8 @@ PM25_proxy <- get_current_proxy_data('PM25')
 aqy_data <- read_aqy_data()
 ```
 
-```{r}
-reset_flags()
+
+reset_flags('OZONE')
 
 timestamps <- filter(aqy_data, ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
   pull(timestamp) %>%
@@ -462,7 +485,7 @@ for(timestamp in timestamps){
   
   check_drift_calibrate_data(aqy_data, O3_proxy, format_timestamp(timestamp))
 }
-```
+
 
 
 

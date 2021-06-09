@@ -15,103 +15,211 @@ library(dplyr)
 library(lubridate)
 ```
 
+### Prepare Data
 ```{r}
-calibrated_aq <- read.csv("raw_data/calibrated_sixty_min_2021-06-04.csv") %>%
+params_aq <- read.csv("../aeroqual/2021-06/pse_calvals_2021-06.csv")
+
+param_paths_pse_all <- list.files('results', 'OZONE*', full.names = T)
+param_path_pse_current <- param_paths_pse_all[length(param_paths_pse_all)]
+params_pse <- read.csv(param_path_pse_current)
+
+raw_data <- read.csv('raw_data/raw_60_min.csv') %>%
   mutate(Time = as.character(ymd_hms(Time) + 8*60*60))
+```
 
-all_params_paths <- list.files('results', 'OZONE*', full.names = T)
-current_params_path <- all_params_paths[length(all_params_paths)]
-params <- read.csv(current_params_path)
+```{r}
+calvals_aq <- inner_join(raw_data, params_aq, by = 'ID') %>%
+  filter(Time >= deployment_datetime & Time >= start_date & Time <= end_date) %>%
+  dplyr::select(-c(X, deployment_date, deployment_datetime, Longitude, Latitude, year_month)) %>%
+  rename_at(.vars = c('PM.gain', 'PM.offset', 'O3.gain', 'O3.offset', 'NO2.a.value', 'NO2.gain', 'NO2.offset', 'Ox.gain', 'Ox.offset'), 
+            .funs = ~paste0(.x, '.aq')) %>%
+  rename('start.date.aq' = 'start_date', 'end.date.aq'='end_date')
+  
+calvals_aq_pse <- inner_join(calvals_aq, params_pse, by = 'ID') %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642') &
+         Time >= deployment_date & Time >= start_date & Time <= end_date &
+         O3.gain != 1 & O3.offset != 0) %>%
+  rename_at(.vars = c('O3.gain', 'O3.offset'), .funs = ~paste0(.x, '.pse')) %>%
+  rename('start.date.pse' = 'start_date', 'end.date.pse'='end_date')
 
-calibrated_aq_pse <- inner_join(params, calibrated_aq, by = 'ID') %>%
-  filter(Time >= start_date & Time <= end_date & Time >= deployment_datetime & Time < 2021) %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
-  transmute(ID = ID, 
-            Time = Time, 
-            TEMP = TEMP, 
-            RH = RH, 
-            NO2 = NO2, 
-            O3_raw = O3_raw, 
-            O3_aq = O3, 
-            O3_pse = round(O3.gain*O3_raw + O3.offset, 2))
+colnames(calvals_aq_pse) <- toupper(str_replace_all(colnames(calvals_aq_pse), '\\_', '\\.'))
 
-proxy_data <- read.csv("results/proxy/OZONE_proxy_data.csv") %>%
+calvals_aq_pse_proxy <- read.csv("results/proxy/OZONE_proxy_data.csv") %>%
   filter(proxy_site == 'San Pablo - Rumrill') %>%
   dplyr::select(timestamp, proxy_raw) %>%
-  rename('Time'='timestamp', 'O3_proxy'='proxy_raw')
-
-O3_data <- inner_join(calibrated_aq_pse, proxy_data, by = 'Time') %>%
-  mutate(timestamp = ymd_hms(Time), .after = 'Time')
-
-#write.csv(O3_data, 'O3_calibration_2021-06-04.csv', row.names = F)
+  rename('TIME'='timestamp', 'O3.PROXY'='proxy_raw') %>%
+  inner_join(., calvals_aq_pse, by = 'TIME') %>%
+  filter(TIME < 2021)
 ```
 
 ```{r}
-plot_calibration_results <- function(aqy_id){
+O3_data <- mutate(calvals_aq_pse_proxy,
+                          TIMESTAMP = ymd_hms(TIME),
+                          O3.AQ = O3.GAIN.AQ*(O3.RAW - O3.OFFSET.AQ), 
+                          OX.AQ = OX.GAIN.AQ*(OX.RAW - OX.OFFSET.AQ), 
+                          NO2.AQ = NO2.GAIN.AQ*(OX.AQ-NO2.A.VALUE.AQ*O3.AQ - NO2.OFFSET.AQ),
+                          O3.PSE = O3.GAIN.PSE*O3.RAW + O3.OFFSET.PSE) %>%
+  dplyr::select(ID, TIME, TIMESTAMP, LATITUDE, LONGITUDE, DEPLOYMENT.DATE, DEPLOYMENT.DATETIME,
+                O3.GAIN.PSE, O3.OFFSET.PSE, O3.GAIN.AQ, O3.OFFSET.AQ,
+                O3.PROXY, O3.RAW, O3.PSE, O3.AQ, NO2.RAW, NO2.AQ) %>%
+  mutate(across(is.numeric & !starts_with('L'), ~round(.x, 2)))
+```
+
+### Write Functions to Examine Performance
+```{r}
+get_timeseries <- function(input_data, aqy_id, month.i){
   
-  time_series <- O3_data %>%
-    filter(timestamp >= '2020-09-25' & timestamp <= '2020-09-30') %>%
-    filter(ID == aqy_id) %>%
-    ggplot() +
-    geom_line(aes(x = timestamp, y = O3_proxy), color = 'orange3') +
-    geom_line(aes(x = timestamp, y = O3_raw), color = 'black') +
-    geom_line(aes(x = timestamp, y = O3_aq), color = 'blue3') +
-    geom_line(aes(x = timestamp, y = O3_pse), color = 'cyan3')  +
-    ggtitle(paste('Results for', aqy_id)) 
+  timeseries_plot <- ggplot(input_data) +
+      geom_line(aes(x = TIMESTAMP, y = O3.RAW, color = 'raw')) +
+      geom_line(aes(x = TIMESTAMP, y = O3.PROXY, color = 'proxy')) +
+      geom_line(aes(x = TIMESTAMP, y = O3.AQ, color = 'aeroqual')) +
+      geom_line(aes(x = TIMESTAMP, y = O3.PSE, color = 'pse')) +
+      labs(title = paste('Timeseries for', aqy_id, month.i), x = 'Timestamp', y = 'O3 (ppb)') +
+      theme(plot.title = element_text(hjust = .5))
   
-  print(time_series)
-  
-  scatter_plot <- O3_data %>%
-    filter(ID == aqy_id) %>%
-    ggplot() +
-    geom_line(aes(x = O3_proxy, y = O3_proxy), color = 'black') +
-    geom_point(aes(x = O3_proxy, y = O3_raw), color = 'gray65', alpha = .5, size = 1) +
-    geom_point(aes(x = O3_proxy, y = O3_aq), color = 'blue3', alpha = .5, size = 1) +
-    geom_point(aes(x = O3_proxy, y = O3_pse), color = 'cyan3', alpha = .5, size = 1) +
-    ggtitle(paste('Results for', aqy_id))
-  
-  print(scatter_plot)
+  print(timeseries_plot)
   
 }
-  
-plot_calibration_results('AQY BB-633')  
-plot_calibration_results('AQY BB-642')
 ```
 
 ```{r}
-calculate_fit <- function(aqy_id){
+get_error_timeseries <- function(input_data, aqy_id, month.i){
   
-  model_data <- filter(O3_data, ID == aqy_id)
+  error_timeseries <- input_data %>%
+    mutate(AE.RAW = O3.RAW - O3.PROXY, AE.AQ = O3.AQ - O3.PROXY, AE.PSE = O3.PSE - O3.PROXY) %>%
+    ggplot() +
+    geom_line(aes(x = TIMESTAMP, y = AE.RAW, color = 'raw')) +
+    geom_line(aes(x = TIMESTAMP, y = AE.AQ, color = 'aeroqual')) +
+    geom_line(aes(x = TIMESTAMP, y = AE.PSE, color = 'pse')) +
+    labs(title = paste('Absolute Error for', aqy_id, 'month of', month.i), x = 'Timestamp', y = 'O3_measured - O3_proxy (ppb)') +
+    theme(plot.title = element_text(hjust = .5))
   
-  raw_lm <- summary(lm(data = model_data, formula = 'O3_raw~O3_proxy'))
-  pse_lm <- summary(lm(data = model_data, formula = 'O3_pse~O3_proxy'))
-  aq_lm <- summary(lm(data = model_data, formula = 'O3_aq~O3_proxy'))
+  print(error_timeseries)
   
-  print(paste('Raw data:', round(raw_lm$r.squared, 4)))
-  print(paste('PSE calvals:', round(pse_lm$r.squared, 4)))
-  print(paste('Aeroqual calvals:', round(aq_lm$r.squared, 4)))
 }
-
-print('Results for AQY BB-633')
-calculate_fit('AQY BB-633')
-
-print('Results for AQY BB-642')
-calculate_fit('AQY BB-642')
 ```
 
 ```{r}
-params %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642') & start_date > '2020') %>%
-  ggplot() +
-  geom_line(aes(x = ymd_hms(start_date), y = O3.gain, color = ID)) +
-  ylim(c(0, 3.5))
+get_scatterplot <- function(input_data, aqy_id, month.i){
+  
+  scatterplot <- ggplot(input_data) +
+      geom_line(aes(x = O3.PROXY, y = O3.PROXY, color = '1-to-1 fit')) +
+      geom_point(aes(x = O3.PROXY, y = O3.RAW, color = 'raw'), alpha = .5) +
+      geom_point(aes(x = O3.PROXY, y = O3.PSE, color = 'pse'), alpha = .5) +
+      geom_point(aes(x = O3.PROXY, y = O3.AQ, color = 'aeroqual'), alpha = .5) +
+      labs(title = paste('[Proxy] vs [Measured] for', aqy_id, 'month of', month.i), x = 'Timestamp', y = 'O3 (ppb)') +
+      theme(plot.title = element_text(hjust = .5))
+      
+    print(scatterplot)
 
-params %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642') & start_date > '2020') %>%
-  ggplot() +
-  geom_line(aes(x = ymd_hms(start_date), y = O3.offset, color = ID)) +
-  ylim(c(-50, 0))
+}
 ```
+
+```{r}
+get_lms <- function(input_data, aqy_id, month.i){
+  
+  model_raw <- summary(lm('O3.PROXY~O3.RAW', data = input_data))
+  model_pse <- summary(lm('O3.PROXY~O3.PSE', data = input_data))
+  model_aq <- summary(lm('O3.PROXY~O3.AQ', data = input_data))
+  
+  r_sq <- data.frame(cbind(month.i, round(model_raw$r.squared, 5), round(model_pse$r.squared, 5), round(model_aq$r.squared, 5)))
+  colnames(r_sq) <- c('month', 'raw', 'PSE', 'AQ')
+  
+  return(r_sq)
+}
+```
+
+```{r}
+get_offset_timeseries <- function(input_data, aqy_id){
+  
+  offset_timeseries <- ggplot(input_data) +
+    geom_line(aes(x = TIMESTAMP, y = O3.OFFSET.PSE, color = 'pse')) +
+    geom_line(aes(x = TIMESTAMP, y = O3.OFFSET.AQ, color = 'aeroqual'))  +
+    ggtitle(paste('Offset Over Time for', aqy_id)) +
+    theme(plot.title = element_text(hjust = .5))
+  
+  print(offset_timeseries)
+}
+```
+
+```{r}
+get_gain_timeseries <- function(input_data, aqy_id){
+  
+  gain_timeseries <- ggplot(input_data) +
+    geom_line(aes(x = TIMESTAMP, y = O3.GAIN.PSE, color = 'pse')) +
+    geom_line(aes(x = TIMESTAMP, y = O3.GAIN.AQ, color = 'aeroqual')) +
+    ggtitle(paste('Gain Over Time for', aqy_id)) +
+    theme(plot.title = element_text(hjust = .5))
+  
+  print(gain_timeseries)
+  
+}
+```
+
+```{r}
+get_r2_plot <- function(input_data, aqy_id){
+  
+  r2_plot <- ggplot(input_data) +
+    geom_line(aes(x = as.numeric(month), y = as.numeric(AQ), color = 'aeroqual')) +
+    geom_line(aes(x = as.numeric(month), y = as.numeric(PSE), color = 'pse')) +
+    labs(x = 'Month', y = 'R^2', title = paste('Proxy ~ Measured R^2 Over Time for', aqy_id))  +
+    theme(plot.title = element_text(hjust = .5))
+  
+  print(r2_plot)
+}
+```
+
+### Run Performance Tests
+```{r}
+months <- c('07', '08', '09', '10', '11', '12')
+```
+
+```{r}
+make_all_plots <- function(aqy_id){
+  
+  monthly_models <- data.frame()
+  
+  for(month.i in months){
+    
+    data_for_month <- filter(O3_data, ID == aqy_id & TIME >= paste0('2020-', month.i, '-01 00:00:00') & TIME <= paste0('2020-', month.i, '-31 23:59:59'))
+    
+    get_timeseries(data_for_month, aqy_id, month.i)
+    
+    get_error_timeseries(data_for_month, aqy_id, month.i)
+    
+    get_scatterplot(data_for_month, aqy_id, month.i)
+    
+    month.i_model <- get_lms(data_for_month, aqy_id, month.i)
+    monthly_models <- rbind(monthly_models, month.i_model)
+    
+  }
+  
+  data_for_deployment <- filter(O3_data, ID == aqy_id)
+  
+  overall_model <- get_lms(data_for_deployment, aqy_id, 'Full Deployment')
+  all_models <- rbind(overall_model, monthly_models)
+  print(all_models)
+  
+  get_r2_plot(monthly_models, aqy_id)
+  
+  get_offset_timeseries(data_for_deployment, aqy_id)
+  
+  get_gain_timeseries(data_for_deployment, aqy_id)
+  
+}
+```
+
+```{r}
+make_all_plots('AQY BB-642')
+```
+
+```{r}
+make_all_plots('AQY BB-633')
+```
+
+
+
+
 
 
 
