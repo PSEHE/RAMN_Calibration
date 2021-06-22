@@ -9,60 +9,89 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+```{r, echo = FALSE, include = FALSE}
 library(ggplot2)
 library(dplyr)
 library(lubridate)
+library(stringr)
 ```
 
 ### Prepare Data
 ```{r}
 params_aq <- read.csv("../aeroqual/2021-06/pse_calvals_2021-06.csv")
 
-param_paths_pse_all <- list.files('results', 'OZONE*', full.names = T)
-param_path_pse_current <- param_paths_pse_all[length(param_paths_pse_all)]
-params_pse <- read.csv(param_path_pse_current)
+param_paths_pse_all_O3 <- list.files('results', 'OZONE*', full.names = T)
+param_path_pse_current_O3 <- param_paths_pse_all_O3[length(param_paths_pse_all_O3)]
+params_pse_O3 <- read.csv(param_path_pse_current_O3)
+
+param_paths_pse_all_NO2 <- list.files('results', 'NO2*', full.names = T)
+param_path_pse_current_NO2 <- param_paths_pse_all_NO2[length(param_paths_pse_all_NO2)]
+params_pse_NO2 <- read.csv(param_path_pse_current_NO2)
 
 raw_data <- read.csv('raw_data/raw_60_min.csv') %>%
   mutate(Time = as.character(ymd_hms(Time) + 8*60*60))
 ```
 
 ```{r}
-calvals_aq <- inner_join(raw_data, params_aq, by = 'ID') %>%
+data_aq <- inner_join(raw_data, params_aq, by = 'ID') %>%
   filter(Time >= deployment_datetime & Time >= start_date & Time <= end_date) %>%
   dplyr::select(-c(X, deployment_date, deployment_datetime, Longitude, Latitude, year_month)) %>%
-  rename_at(.vars = c('PM.gain', 'PM.offset', 'O3.gain', 'O3.offset', 'NO2.a.value', 'NO2.gain', 'NO2.offset', 'Ox.gain', 'Ox.offset'), 
+  rename_at(.vars = c('PM.gain', 'PM.offset', 'O3.gain', 'O3.offset', 
+                      'NO2.a.value', 'NO2.gain', 'NO2.offset', 'Ox.gain', 'Ox.offset'), 
             .funs = ~paste0(.x, '.aq')) %>%
   rename('start.date.aq' = 'start_date', 'end.date.aq'='end_date')
   
-calvals_aq_pse <- inner_join(calvals_aq, params_pse, by = 'ID') %>%
+data_aq_pse.O3 <- inner_join(data_aq, params_pse_O3, by = 'ID') %>%
   filter(ID %in% c('AQY BB-633', 'AQY BB-642') &
          Time >= deployment_date & Time >= start_date & Time <= end_date &
          O3.gain != 1 & O3.offset != 0) %>%
-  rename_at(.vars = c('O3.gain', 'O3.offset'), .funs = ~paste0(.x, '.pse')) %>%
-  rename('start.date.pse' = 'start_date', 'end.date.pse'='end_date')
+  dplyr::select(-c(proxy_site, Latitude, Longitude, deployment_date, deployment_datetime)) %>%
+  rename('start.date.pse.O3'='start_date', 'end.date.pse.O3'='end_date') %>%
+  rename_at(.vars = c('O3.gain', 'O3.offset'), .funs = ~paste0(.x, '.pse'))
 
-colnames(calvals_aq_pse) <- toupper(str_replace_all(colnames(calvals_aq_pse), '\\_', '\\.'))
+data_aq_pse <- inner_join(data_aq_pse.O3, params_pse_NO2, by = 'ID') %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642') &
+         Time >= deployment_date & Time >= start_date & Time <= end_date &
+         NO2.gain != 1 & NO2.offset != 0) %>%
+  rename_at(.vars = c('NO2.gain', 'NO2.offset'), .funs = ~paste0(.x, '.pse')) %>%
+  rename('start.date.pse.NO2' = 'start_date', 'end.date.pse.NO2'='end_date')
+```
 
-calvals_aq_pse_proxy <- read.csv("results/proxy/OZONE_proxy_data.csv") %>%
+```{r}
+colnames(data_aq_pse) <- toupper(str_replace_all(colnames(data_aq_pse), '\\_', '\\.'))
+
+data_aq_pse_proxy <- read.csv("results/proxy/NO2_proxy_data.csv") %>%
   filter(proxy_site == 'San Pablo - Rumrill') %>%
-  dplyr::select(timestamp, proxy_raw) %>%
-  rename('TIME'='timestamp', 'O3.PROXY'='proxy_raw') %>%
-  inner_join(., calvals_aq_pse, by = 'TIME') %>%
+  dplyr::select(timestamp_utc, proxy_raw, proxy_site) %>%
+  rename('NO2.PROXY' = proxy_raw) %>%
+  inner_join(., read.csv("results/proxy/OZONE_proxy_data.csv"), by = c('proxy_site', 'timestamp_utc')) %>%
+  rename('TIME'='timestamp_utc') %>%
+  inner_join(., data_aq_pse, by = 'TIME') %>%
+  rename('O3.PROXY' = proxy_raw) %>%
   filter(TIME < 2021)
 ```
 
 ```{r}
-O3_data <- mutate(calvals_aq_pse_proxy,
+corrected_data <- mutate(data_aq_pse_proxy,
                           TIMESTAMP = ymd_hms(TIME),
                           O3.AQ = O3.GAIN.AQ*(O3.RAW - O3.OFFSET.AQ), 
                           OX.AQ = OX.GAIN.AQ*(OX.RAW - OX.OFFSET.AQ), 
                           NO2.AQ = NO2.GAIN.AQ*(OX.AQ-NO2.A.VALUE.AQ*O3.AQ - NO2.OFFSET.AQ),
-                          O3.PSE = O3.GAIN.PSE*O3.RAW + O3.OFFSET.PSE) %>%
-  dplyr::select(ID, TIME, TIMESTAMP, LATITUDE, LONGITUDE, DEPLOYMENT.DATE, DEPLOYMENT.DATETIME,
+                          O3.PSE = O3.GAIN.PSE*O3.RAW + O3.OFFSET.PSE,
+                          NO2.PSE = NO2.GAIN.PSE*NO2.RAW + NO2.OFFSET.PSE) %>%
+  dplyr::select(c(ID, TIME, TIMESTAMP, LATITUDE, LONGITUDE, DEPLOYMENT.DATE, DEPLOYMENT.DATETIME,
                 O3.GAIN.PSE, O3.OFFSET.PSE, O3.GAIN.AQ, O3.OFFSET.AQ,
-                O3.PROXY, O3.RAW, O3.PSE, O3.AQ, NO2.RAW, NO2.AQ) %>%
-  mutate(across(is.numeric & !starts_with('L'), ~round(.x, 2)))
+                O3.PROXY, O3.RAW, O3.PSE, O3.AQ, 
+                NO2.GAIN.PSE, NO2.OFFSET.PSE, NO2.GAIN.AQ, NO2.OFFSET.AQ, NO2.A.VALUE.AQ, NO2.RAW,
+                NO2.PROXY, NO2.RAW, NO2.PSE, NO2.AQ)) %>%
+  mutate(across(where(is.numeric) & !starts_with('L'), ~round(.x, 2)))
+```
+
+```{r}
+ggplot(data = corrected_data) +
+  geom_line(aes(x = NO2.PROXY, y = NO2.PROXY, color = 'perfect fit')) +
+  geom_point(aes(x = NO2.PROXY, y = NO2.AQ, color = 'aeroqual'), alpha = .5) +
+  geom_point(aes(x = NO2.PROXY, y = NO2.PSE, color = 'PSE'), alpha = .5)
 ```
 
 ### Write Functions to Examine Performance
@@ -74,7 +103,8 @@ get_timeseries <- function(input_data, aqy_id, month.i){
       geom_line(aes(x = TIMESTAMP, y = O3.PROXY, color = 'proxy')) +
       geom_line(aes(x = TIMESTAMP, y = O3.AQ, color = 'aeroqual')) +
       geom_line(aes(x = TIMESTAMP, y = O3.PSE, color = 'pse')) +
-      labs(title = paste('Timeseries for', aqy_id, month.i), x = 'Timestamp', y = 'O3 (ppb)') +
+      labs(title = paste('Timeseries for', aqy_id, month.i), 
+           x = 'Timestamp', y = 'O3 (ppb)') +
       theme(plot.title = element_text(hjust = .5))
   
   print(timeseries_plot)
@@ -91,7 +121,8 @@ get_error_timeseries <- function(input_data, aqy_id, month.i){
     geom_line(aes(x = TIMESTAMP, y = AE.RAW, color = 'raw')) +
     geom_line(aes(x = TIMESTAMP, y = AE.AQ, color = 'aeroqual')) +
     geom_line(aes(x = TIMESTAMP, y = AE.PSE, color = 'pse')) +
-    labs(title = paste('Absolute Error for', aqy_id, 'month of', month.i), x = 'Timestamp', y = 'O3_measured - O3_proxy (ppb)') +
+    labs(title = paste('Absolute Error for', aqy_id, 'month of', month.i), 
+         x = 'Timestamp', y = 'O3_measured - O3_proxy (ppb)') +
     theme(plot.title = element_text(hjust = .5))
   
   print(error_timeseries)
@@ -107,7 +138,8 @@ get_scatterplot <- function(input_data, aqy_id, month.i){
       geom_point(aes(x = O3.PROXY, y = O3.RAW, color = 'raw'), alpha = .5) +
       geom_point(aes(x = O3.PROXY, y = O3.PSE, color = 'pse'), alpha = .5) +
       geom_point(aes(x = O3.PROXY, y = O3.AQ, color = 'aeroqual'), alpha = .5) +
-      labs(title = paste('[Proxy] vs [Measured] for', aqy_id, 'month of', month.i), x = 'Timestamp', y = 'O3 (ppb)') +
+      labs(title = paste('[Proxy] vs [Measured] for', aqy_id, 'month of', month.i), 
+           x = 'Timestamp', y = 'O3 (ppb)') +
       theme(plot.title = element_text(hjust = .5))
       
     print(scatterplot)
@@ -162,7 +194,8 @@ get_r2_plot <- function(input_data, aqy_id){
   r2_plot <- ggplot(input_data) +
     geom_line(aes(x = as.numeric(month), y = as.numeric(AQ), color = 'aeroqual')) +
     geom_line(aes(x = as.numeric(month), y = as.numeric(PSE), color = 'pse')) +
-    labs(x = 'Month', y = 'R^2', title = paste('Proxy ~ Measured R^2 Over Time for', aqy_id))  +
+    labs(x = 'Month', y = 'R^2', 
+         title = paste('Proxy ~ Measured R^2 Over Time for', aqy_id))  +
     theme(plot.title = element_text(hjust = .5))
   
   print(r2_plot)
