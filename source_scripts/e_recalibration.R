@@ -25,12 +25,12 @@ generate_new_gain_and_offset <- function(joined_data_30day, aqys_needing_recal, 
 # Combine new params with existing - including generating new start and end dates as appropriate
 combine_params_get_first_flag <- function(new_params, pollutant){
   
-  aqys_recalibrated <- new_params$ID
-  
   old_params <- get_current_params(pollutant)
   
   aqy_metadata <- select(old_params, c('ID', 'deployment_date', 'deployment_datetime', 'Longitude', 'Latitude', 'proxy_site')) %>%
     unique()
+  
+  aqys_recalibrated <- new_params$ID
   
   time_first_flagged <- read.csv(paste0('results/running_flags/running_flags_', pollutant, '.csv')) %>%
     filter(ID %in% aqys_recalibrated) %>%

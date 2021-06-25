@@ -31,10 +31,9 @@ reset_flags <- function(pollutant){
   
   read.csv(file_with_flags) %>%
     mutate_at(.vars = c('ks', 'gain', 'offset'), .funs = ~.x*0) %>%
-    mutate(flag_first_detected = '2199-01-01 00:00:00') %>%
+    mutate(ks_detected = '2199-01-01 00:00:00', gain_detected = '2199-01-01 00:00:00', offset_detected = '2199-01-01 00:00:00',
+           time_of_first_flag = '2199-01-01 00:00:00') %>%
     write.csv(file_with_flags, row.names = F)
   
   print(paste('Reset', pollutant, 'flags - restarting drift detection at zero'))
 }
-
-

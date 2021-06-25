@@ -2,7 +2,7 @@
 
 
 # Get flags for current 72-hr period
-get_new_flags <- function(joined_data_72hr, look_back_from_time){
+get_new_flags <- function(joined_data_72hr){
   
   drift_tests <- group_by(joined_data_72hr, ID) %>%
     summarize(manual_gain = sqrt(var(proxy_rand)/var(pollutant)),
@@ -11,7 +11,6 @@ get_new_flags <- function(joined_data_72hr, look_back_from_time){
               .groups = 'drop_last')
   
   drift_flags <- mutate(drift_tests,
-                        time_of_current_flag = look_back_from_time,
                         gain_new = ifelse(manual_gain >= 1.3 | manual_gain <= .7, 1, 0),
                         offset_new = ifelse(manual_offset >= 5 | manual_offset <= -5, 1, 0),
                         ks_new = ifelse(ks_p <= .05, 1, 0))
@@ -46,13 +45,16 @@ sum_old_and_new_flags <- function(pollutant, new_flags, look_back_from_time){
     mutate_at(.tbl = ., .vars = c('time_of_first_flag'), .funs = ~replace_na(.x, '2199-01-01 00:00:00'))
   
   new_old_summed_flags <- mutate(na_rm_flags,
+                         current_time = look_back_from_time,
                          ks = sum_if_flagged(ks, ks_new),
                          gain = sum_if_flagged(gain, gain_new),
                          offset = sum_if_flagged(offset, offset_new),
-                         time_of_first_flag = ifelse(ks == 0 & gain == 0 & offset == 0, '2199-01-01 00:00:00', 
-                                                     ifelse(time_of_current_flag < time_of_first_flag, time_of_current_flag, time_of_first_flag)))
-  
-  summed_flags <- dplyr::select(new_old_summed_flags, c('ID', 'time_of_first_flag', 'ks', 'gain', 'offset'))
+                         ks_detected = ifelse(ks == 0, '2199-01-01 00:00:00', min(ks_detected, current_time)),
+                         gain_detected = ifelse(gain == 0, '2199-01-01 00:00:00', min(gain_detected, current_time)),
+                         offset_detected = ifelse(offset == 0, '2199-01-01 00:00:00', min(offset_detected, current_time)),
+                         time_of_first_flag = min(ks_detected, gain_detected, offset_detected))
+
+  summed_flags <- dplyr::select(new_old_summed_flags, c('ID', 'ks', 'gain', 'offset', 'ks_detected', 'gain_detected', 'offset_detected', 'time_of_first_flag'))
 
   write.csv(summed_flags, flag_path, row.names = F)
   
@@ -63,7 +65,7 @@ sum_old_and_new_flags <- function(pollutant, new_flags, look_back_from_time){
 
 get_aqys_needing_recal <- function(summed_flags){
   
-  largest_running_flag <- apply(X = summed_flags[3:ncol(summed_flags)], MARGIN = 1, FUN = max)
+  largest_running_flag <- apply(X = summed_flags[2:4], MARGIN = 1, FUN = max)
   
   summed_flags$max_flag <- largest_running_flag
   

@@ -18,7 +18,7 @@ library(lubridate)
 library(stringr)
 ```
 
-#Call in Constituent Functions from Other Scripts
+# Call in Constituent Functions from Other Scripts
 ```{r}
 source('source_scripts/a_general_purpose_setup.R')
 source('source_scripts/b_airnow_api_call.R')
@@ -40,7 +40,7 @@ proxy.data <- get_current_proxy_data(pollutant)
 aqy.data <- suppressWarnings(read_aqy_data())
 
 aqy.proxy.data.raw <- inner_join(aqy.data, proxy.data, by = 'timestamp_pacific') %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642'))
+  filter(ID %in% c('AQY BB-642'))
 
 aqy.proxy.data <- calibrate_O3_data(aqy.proxy.data.raw)
 ```
@@ -57,12 +57,15 @@ look.back.from.time <- format_timestamp(ymd_hms(first.timestamp) + td_30day)
 ```{r}
 while(look.back.from.time < 2021){
   
+  print(look.back.from.time)
+  
   my.outputs <- detect_drift_recalibrate_data(aqy.proxy.data, aqy.proxy.data.raw, pollutant, look.back.from.time)
   
   aqy.proxy.data <- my.outputs$calibrated_data
   look.back.from.time <- my.outputs$look_back_from_time
   
 }
+
 ```
 
 

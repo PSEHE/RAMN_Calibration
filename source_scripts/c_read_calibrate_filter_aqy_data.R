@@ -78,7 +78,7 @@ temporally_filter_data <- function(aqy_proxy_data, look_back_from_time, td_subtr
   look_back_until_time <- format_timestamp(ymd_hms(format_timestamp(look_back_from_time)) - td_subtract_from_time)
   
   current_action <- ifelse(td_subtract_from_time == td_72hr, 'drift detection', 'recalibration')
-  print(paste('Using data between', look_back_until_time, 'and', look_back_from_time, 'to perform', current_action))
+  #print(paste('Using data between', look_back_until_time, 'and', look_back_from_time, 'to perform', current_action))
   
   filtered_data <-  filter(aqy_proxy_data, timestamp_pacific <= look_back_from_time & timestamp_pacific > look_back_until_time) %>%
     na.omit()
