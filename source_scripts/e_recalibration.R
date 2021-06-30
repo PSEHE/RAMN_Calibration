@@ -1,7 +1,7 @@
 
 
 # Generate new offset and gain using simple formula and thirty days of data
-generate_new_gain_and_offset <- function(joined_data_30day, aqys_needing_recal, pollutant){
+generate_new_gain_and_offset_O3 <- function(joined_data_30day, aqys_needing_recal){
   
   new_gain_and_offset <- filter(joined_data_30day, ID %in% aqys_needing_recal) %>%
     group_by(ID) %>%
@@ -9,9 +9,27 @@ generate_new_gain_and_offset <- function(joined_data_30day, aqys_needing_recal, 
               new.offset = mean(proxy_rand) - new.gain*mean(pollutant_raw),
               .groups = 'drop_last')
   
-  new_col_names <- switch(pollutant, 
-                          'OZONE'=c('ID', 'O3.gain', 'O3.offset'), 
-                          'NO2'=c('ID', 'NO2.gain', 'NO2.offset'))
+  new_col_names <- c('ID', 'O3.gain', 'O3.offset')
+  colnames(new_gain_and_offset) <- new_col_names
+  
+  print(as.matrix(new_gain_and_offset))
+  
+  return(new_gain_and_offset)
+  
+}
+
+
+# Initialize offset and gain for subsequent iteration using simple formula and thirty days of data
+generate_initial_gain_and_offset_NO2 <- function(joined_data_30day, aqys_needing_recal){
+  
+  new_gain_and_offset <- filter(joined_data_30day, ID %in% aqys_needing_recal) %>%
+    group_by(ID) %>%
+    summarize(new.offset = mean(proxy_rand) - mean(Ox_raw - O3), ## Potential issue - Ox raw signal vs. raw Ox - pull from API?
+              new.gain.Ox = sqrt(var(proxy_rand)/var(Ox_raw - O3)),
+              new.gain.O3 = new.gain.Ox,
+              .groups = 'drop_last')
+  
+  new_col_names <- c('ID', 'NO2.offset', 'NO2.gain.Ox', 'NO2.gain.O3')
   colnames(new_gain_and_offset) <- new_col_names
   
   print(as.matrix(new_gain_and_offset))

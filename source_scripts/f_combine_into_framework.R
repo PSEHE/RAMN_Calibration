@@ -24,7 +24,12 @@ detect_drift_recalibrate_data <- function(aqy_proxy_data, aqy_proxy_data_raw, po
     
     aqy_proxy_data_30day <- temporally_filter_data(aqy_proxy_data, look_back_from_time, td_30day)
     
-    new_parameters <- generate_new_gain_and_offset(aqy_proxy_data_30day, aqys_needing_recal, pollutant)
+    if(pollutant == 'OZONE')
+    {new_parameters <- generate_new_gain_and_offset_O3(aqy_proxy_data_30day, aqys_needing_recal)
+      }
+      else{new_parameters <- generate_initial_gain_and_offset_NO2(aqy_proxy_data_30day, aqys_needing_recal)
+      ## function for optimization here
+      }
     
     first_flag <- combine_params_get_first_flag(new_parameters, pollutant)
 
@@ -33,6 +38,7 @@ detect_drift_recalibrate_data <- function(aqy_proxy_data, aqy_proxy_data_raw, po
     reset_flags(pollutant)
     
     aqy_proxy_data <- calibrate_O3_data(aqy_proxy_data_raw)
+    if(pollutant == 'NO2'){aqy_proxy_data <- calibrate_NO2_data(aqy_proxy_data)}
     
     return(list(look_back_from_time=new_look_back_from_time, calibrated_data=aqy_proxy_data))
     }

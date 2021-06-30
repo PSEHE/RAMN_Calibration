@@ -62,7 +62,7 @@ calibrate_NO2_data <- function(aqy_proxy_data_O3){
     filter(timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
     rename('O3'='pollutant', 'O3_raw'='pollutant_raw')
   
-  aqy_proxy_data_NO2 <- mutate(data_plus_params_NO2, NO2 = NO2.offset + (NO2.gain*NO2_raw)) %>%
+  aqy_proxy_data_NO2 <- mutate(data_plus_params_NO2, NO2 = NO2.offset + NO2.gain.Ox*Ox_raw - NO2.gain.O3*O3) %>%
     dplyr::select(ID, timestamp_pacific, proxy_rand, TEMP, RH, DP, O3, O3_raw, Ox_raw, NO2, NO2_raw) %>%
     rename('pollutant'='NO2', 'pollutant_raw'='NO2_raw')
   

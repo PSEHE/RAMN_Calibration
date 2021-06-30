@@ -14,6 +14,8 @@ library(ggplot2)
 library(dplyr)
 library(lubridate)
 library(stringr)
+
+source('source_scripts/b_airnow_api_call.R')
 ```
 
 ### Prepare Data
@@ -24,49 +26,64 @@ param_paths_pse_all_O3 <- list.files('results', 'OZONE*', full.names = T)
 param_path_pse_current_O3 <- param_paths_pse_all_O3[length(param_paths_pse_all_O3)]
 params_pse_O3 <- read.csv(param_path_pse_current_O3)
 
+param_paths_pse_all_NO2 <- list.files('results', 'NO2*', full.names = T)
+param_path_pse_current_NO2 <- param_paths_pse_all_NO2[length(param_paths_pse_all_NO2)]
+params_pse_NO2 <- read.csv(param_path_pse_current_NO2)
+
 raw_data <- read.csv('raw_data/raw_60_min.csv') %>%
   filter(ID %in% c('AQY BB-633', 'AQY BB-642'))
 ```
 
 ```{r}
-data_aq <- inner_join(raw_data, params_aq, by = 'ID') %>%
-  filter(Time >= deployment_datetime & Time >= start_date & Time <= end_date) %>%
-  dplyr::select(-c(X, deployment_date, deployment_datetime, Longitude, Latitude, year_month)) %>%
-  rename_at(.vars = c('PM.gain', 'PM.offset', 'O3.gain', 'O3.offset', 'NO2.a.value', 'NO2.gain', 'NO2.offset', 'Ox.gain', 'Ox.offset', 'start_date', 'end_date'), 
-            .funs = ~paste0(str_replace_all(.x, '_', '\\.'), '.AQ'))
+proxy_O3 <- get_current_proxy_data('OZONE')
 
-data_aq_pse <- inner_join(data_aq, params_pse_O3, by = 'ID') %>%
-  filter(Time >= deployment_date & Time >= start_date & Time <= end_date & O3.gain != 1 & O3.offset != 0) %>%
-  dplyr::select(-c(proxy_site, Latitude, Longitude, deployment_date, deployment_datetime)) %>%
-  rename_at(.vars = c('O3.gain', 'O3.offset', 'start_date', 'end_date'), .funs = ~paste0(str_replace_all(.x, '_', '\\.'), '.PSE'))
-
-#data_aq_pse_O3_NO2 <- inner_join(data_aq_pse_O3, params_pse_NO2, by = 'ID') %>%
-  #filter(Time >= deployment_date & Time >= start_date & Time <= end_date & NO2.gain != 1 & NO2.offset != 0) %>%
-  #rename_at(.vars = c('NO2.gain', 'NO2.offset', 'start_date', 'end_date'), .funs = ~paste0(str_replace_all(.x, '_', '\\.'), '.PSE.N'))
+proxy_NO2 <- get_current_proxy_data('NO2')
 ```
 
 ```{r}
-colnames(data_aq_pse) <- toupper(str_replace_all(colnames(data_aq_pse), '\\_', '\\.'))
+O3_data_aq <- inner_join(params_aq, raw_data, by = 'ID') %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
+  filter(Time >= deployment_date & Time >= start_date & Time <= end_date & Time < 2021) %>%
+  transmute(ID=ID, TIME=Time, O3.RAW = O3_raw,
+            O3.AQ = round(O3.gain*(O3_raw - O3.offset), 2),
+            O3.GAIN.AQ=O3.gain, O3.OFFSET.AQ=O3.offset)
 
-proxy_O3 <- read.csv("results/proxy/OZONE_proxy_data.csv") %>%
-  rename('O3.PROXY' = proxy_raw) %>%
-  filter(proxy_site == 'San Pablo - Rumrill') %>%
-  mutate(TIME = as.character(ymd_hms(timestamp_utc) + 8*60*60)) %>%
-  dplyr::select(TIME, O3.PROXY)
+O3_data_pse <- inner_join(params_pse_O3, raw_data, by = 'ID') %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
+  filter(Time >= deployment_date & Time >= start_date & Time <= end_date & Time < 2021) %>%
+  transmute(ID=ID, TIME=Time,
+            O3.PSE = round(O3.offset + O3.gain*O3_raw, 2),
+            O3.GAIN.PSE=O3.gain, O3.OFFSET.PSE=O3.offset)
+
+O3_data <- inner_join(O3_data_aq, O3_data_pse, by = c('ID', 'TIME')) %>%
+  inner_join(., proxy_O3, by = c('TIME'='timestamp_pacific')) %>%
+  mutate(TIMESTAMP = ymd_hms(TIME), O3.PROXY = round(proxy_rand, 2)) %>%
+  dplyr::select(ID, TIME, TIMESTAMP, O3.RAW, O3.PROXY, O3.AQ, O3.PSE, O3.GAIN.AQ, O3.GAIN.PSE, O3.OFFSET.AQ, O3.OFFSET.PSE) %>%
+  filter(O3.GAIN.PSE != 1)
+```
+
+```{r}
+NO2_data_aq <- inner_join(params_aq, raw_data, by = 'ID') %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
+  filter(Time >= deployment_date & Time >= start_date & Time <= end_date & Time < 2021) %>%
+  mutate(O3.AQ = O3.gain*(O3_raw - O3.offset), OX.AQ = Ox.gain*(Ox_raw - Ox.offset), NO2.INT = OX.AQ-NO2.a.value*O3.AQ) %>%
+  transmute(ID=ID, TIME=Time, NO2.GAIN.AQ=NO2.gain, NO2.OFFSET.AQ=NO2.offset, NO2.AQ = round(NO2.gain*(NO2.INT - NO2.offset), 2))
   
-data_aq_pse_proxy <- inner_join(data_aq_pse, proxy, by = 'TIME') %>%
-  filter(TIME < 2021)
-```
+NO2_data_pse <- inner_join(params_pse_O3, raw_data, by = 'ID') %>%
+  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
+  filter(Time >= deployment_date & Time >= start_date & Time <= end_date & Time < 2021) %>%
+  transmute(ID=ID, TIME=Time, NO2.RAW = NO2_raw, Ox.RAW = Ox_raw, O3.PSE = round(O3.offset + O3.gain*O3_raw, 2)) %>%
+  inner_join(params_pse_NO2, by = 'ID') %>%
+  filter(TIME >= deployment_date & TIME >= start_date & TIME <= end_date & TIME < 2021) %>%
+  transmute(ID=ID, TIME=TIME, NO2.RAW=NO2.RAW, 
+            NO2.PSE = round(NO2.offset + NO2.gain.Ox*Ox.RAW - NO2.gain.O3*O3.PSE, 2),
+            NO2.GAIN.PSE=NO2.gain.Ox, NO2.OFFSET.PSE=NO2.offset)
 
-```{r}
-O3_data <- mutate(data_aq_pse_proxy,
-                          TIMESTAMP = ymd_hms(TIME),
-                          O3.AQ = O3.GAIN.AQ*(O3.RAW - O3.OFFSET.AQ), 
-                          O3.PSE = O3.GAIN.PSE*O3.RAW + O3.OFFSET.PSE) %>%
-  dplyr::select(c(ID, TIME, TIMESTAMP, 
-                O3.GAIN.PSE, O3.OFFSET.PSE, O3.GAIN.AQ, O3.OFFSET.AQ,
-                O3.PROXY, O3.RAW, O3.PSE, O3.AQ)) %>% 
-  mutate(across(where(is.numeric) & !starts_with('L'), ~round(.x, 2)))
+NO2_data <- inner_join(NO2_data_pse, proxy_NO2, by = c('TIME'='timestamp_pacific')) %>%
+  inner_join(NO2_data_aq, by = c('ID', 'TIME')) %>%
+  mutate(TIMESTAMP = ymd_hms(TIME), NO2.PROXY = round(proxy_rand, 2)) %>%
+  dplyr::select(ID, TIME, TIMESTAMP, NO2.RAW, NO2.PROXY, NO2.PSE, NO2.AQ, NO2.GAIN.PSE, NO2.GAIN.AQ, NO2.OFFSET.PSE, NO2.OFFSET.AQ) %>%
+  filter(NO2.GAIN.PSE != 1)
 ```
 
 ### Write Functions to Examine Performance
@@ -225,7 +242,33 @@ make_all_plots('AQY BB-642')
 make_all_plots('AQY BB-633')
 ```
 
+### MANUAL PLOTS
+```{r}
+get_scatter_facet_aqy <- function(in_data, pollutant, aqy_id){
+  
+  colnames(in_data) <- str_replace_all(colnames(in_data), pollutant, 'POL')
+  
+  scatter_facet <- in_data %>%
+    filter(ID == aqy_id) %>%
+    mutate(MONTH = month(TIMESTAMP, label = T, abbr = F), .after = 'TIMESTAMP') %>%
+      ggplot() + 
+      geom_line(aes(x = POL.PROXY, y = POL.PROXY, color = '1-to-1 Fit')) +
+      geom_point(aes(x = POL.PROXY, y = POL.RAW, color = 'Raw'), size = .5, alpha = .5) +
+      geom_point(aes(x = POL.PROXY, y = POL.AQ, color = 'Aeroqual'), size = .5, alpha = .5) +
+      geom_point(aes(x = POL.PROXY, y = POL.PSE, color = 'PSE'), size = .5, alpha = .5) +
+      labs(x = 'Proxy Concentration (ppb)', y = 'Measured Concentration (ppb)', title = paste('Ozone Concentration & Calibration - ', aqy_id)) +
+      theme(plot.title = element_text(hjust = .5)) +
+      facet_wrap(~MONTH)
+  
+  return(scatter_facet)
+}
 
+get_scatter_facet_aqy(O3_data, 'O3', 'AQY BB-633')
+get_scatter_facet_aqy(O3_data, 'O3', 'AQY BB-642')
+
+get_scatter_facet_aqy(NO2_data, 'NO2', 'AQY BB-633')
+get_scatter_facet_aqy(NO2_data, 'NO2', 'AQY BB-642')
+```
 
 
 
