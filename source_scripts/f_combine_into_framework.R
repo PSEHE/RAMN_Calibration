@@ -25,7 +25,10 @@ detect_drift_recalibrate_data <- function(aqy_proxy_data, aqy_proxy_data_raw, po
     }
   else{
     print('Need to recalibrate - filtering to 30 day data')
-    aqy_proxy_data_30day <- temporally_filter_data(aqy_proxy_data, look_back_from_time, td_30day)
+    
+    start_recal <- format_timestamp(ymd_hms(look_back_from_time) - td_5day)
+    
+    aqy_proxy_data_30day <- temporally_filter_data(aqy_proxy_data, start_recal, td_30day)
     
     if(pollutant == 'OZONE')
     {new_parameters <- generate_new_gain_and_offset_O3(aqy_proxy_data_30day, aqys_needing_recal)

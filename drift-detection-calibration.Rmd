@@ -77,8 +77,6 @@ while(look.back.from.time < 2021){
 
 
 
-
-
          
 
 

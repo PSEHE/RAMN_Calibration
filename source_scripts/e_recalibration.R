@@ -40,6 +40,20 @@ generate_initial_gain_and_offset_NO2 <- function(joined_data_30day, aqys_needing
 
 
 
+# Optimization of NO2 parameters
+optimize_params_NO2 <- function(joined_data_30day, new_gain_and_offset){
+  
+  objective_fxn <- function(joined_data_30day, par){with(joined_data_30day, par[1] + par[2]*Ox_raw - par[3]*O3)}
+  
+  optim_result <- optim(par = c(new_gain_and_offset$NO2.offset, new_gain_and_offset$NO2.gain.Ox, new_gain_and_offset$NO2.gain.O3), fn = objective_fxn, data = joined_data_30day)
+  
+  return(optim_result)
+  
+  
+}
+
+
+
 # Combine new params with existing - including generating new start and end dates as appropriate
 combine_params_get_first_flag <- function(new_params, pollutant){
   
