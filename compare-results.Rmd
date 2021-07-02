@@ -14,7 +14,10 @@ library(ggplot2)
 library(dplyr)
 library(lubridate)
 library(stringr)
+library(httr)
+library(jsonlite)
 
+source('source_scripts/a_general_purpose_setup.R')
 source('source_scripts/b_airnow_api_call.R')
 ```
 
@@ -88,15 +91,15 @@ NO2_data <- inner_join(NO2_data_pse, proxy_NO2, by = c('TIME'='timestamp_pacific
 
 ### Write Functions to Examine Performance
 ```{r}
-get_timeseries <- function(input_data, aqy_id, month.i){
+get_timeseries <- function(input_data, aqy_id, month.i, pollutant){
   
   timeseries_plot <- ggplot(input_data) +
-      geom_line(aes(x = TIMESTAMP, y = O3.RAW, color = 'raw')) +
-      geom_line(aes(x = TIMESTAMP, y = O3.PROXY, color = 'proxy')) +
-      geom_line(aes(x = TIMESTAMP, y = O3.AQ, color = 'aeroqual')) +
-      geom_line(aes(x = TIMESTAMP, y = O3.PSE, color = 'pse')) +
-      labs(title = paste('Timeseries for', aqy_id, month.i), 
-           x = 'Timestamp', y = 'O3 (ppb)') +
+      geom_line(aes(x = TIMESTAMP, y = POL.RAW, color = 'raw')) +
+      geom_line(aes(x = TIMESTAMP, y = POL.PROXY, color = 'proxy')) +
+      geom_line(aes(x = TIMESTAMP, y = POL.AQ, color = 'aeroqual')) +
+      geom_line(aes(x = TIMESTAMP, y = POL.PSE, color = 'pse')) +
+      labs(title = paste(pollutant, 'Timeseries', '-', aqy_id, 'Month of', month.i), 
+           x = 'Timestamp', y = paste('Pollutant Concentration (ppb)')) +
       theme(plot.title = element_text(hjust = .5))
   
   print(timeseries_plot)
@@ -105,16 +108,16 @@ get_timeseries <- function(input_data, aqy_id, month.i){
 ```
 
 ```{r}
-get_error_timeseries <- function(input_data, aqy_id, month.i){
+get_error_timeseries <- function(input_data, aqy_id, month.i, pollutant){
   
   error_timeseries <- input_data %>%
-    mutate(AE.RAW = O3.RAW - O3.PROXY, AE.AQ = O3.AQ - O3.PROXY, AE.PSE = O3.PSE - O3.PROXY) %>%
+    mutate(AE.RAW = POL.RAW - POL.PROXY, AE.AQ = POL.AQ - POL.PROXY, AE.PSE = POL.PSE - POL.PROXY) %>%
     ggplot() +
     geom_line(aes(x = TIMESTAMP, y = AE.RAW, color = 'raw')) +
     geom_line(aes(x = TIMESTAMP, y = AE.AQ, color = 'aeroqual')) +
     geom_line(aes(x = TIMESTAMP, y = AE.PSE, color = 'pse')) +
-    labs(title = paste('Absolute Error for', aqy_id, 'month of', month.i), 
-         x = 'Timestamp', y = 'O3_measured - O3_proxy (ppb)') +
+    labs(title = paste('Absolute Error for', pollutant, '-', aqy_id, 'month of', month.i), 
+         x = 'Timestamp', y = 'Absolute Error (ppb)') +
     theme(plot.title = element_text(hjust = .5))
   
   print(error_timeseries)
@@ -123,15 +126,15 @@ get_error_timeseries <- function(input_data, aqy_id, month.i){
 ```
 
 ```{r}
-get_scatterplot <- function(input_data, aqy_id, month.i){
+get_scatterplot <- function(input_data, aqy_id, month.i, pollutant){
   
   scatterplot <- ggplot(input_data) +
-      geom_line(aes(x = O3.PROXY, y = O3.PROXY, color = '1-to-1 fit')) +
-      geom_point(aes(x = O3.PROXY, y = O3.RAW, color = 'raw'), alpha = .5) +
-      geom_point(aes(x = O3.PROXY, y = O3.PSE, color = 'pse'), alpha = .5) +
-      geom_point(aes(x = O3.PROXY, y = O3.AQ, color = 'aeroqual'), alpha = .5) +
-      labs(title = paste('[Proxy] vs [Measured] for', aqy_id, 'month of', month.i), 
-           x = 'Timestamp', y = 'O3 (ppb)') +
+      geom_line(aes(x = POL.PROXY, y = POL.PROXY, color = '1-to-1 fit')) +
+      geom_point(aes(x = POL.PROXY, y = POL.RAW, color = 'raw'), alpha = .5) +
+      geom_point(aes(x = POL.PROXY, y = POL.PSE, color = 'pse'), alpha = .5) +
+      geom_point(aes(x = POL.PROXY, y = POL.AQ, color = 'aeroqual'), alpha = .5) +
+      labs(title = paste(pollutant, '[Proxy] vs [Measured] for', aqy_id, 'month of', month.i), 
+           x = 'Timestamp', y = 'Pollutant Concentration - (ppb)') +
       theme(plot.title = element_text(hjust = .5))
       
     print(scatterplot)
@@ -142,9 +145,9 @@ get_scatterplot <- function(input_data, aqy_id, month.i){
 ```{r}
 get_lms <- function(input_data, aqy_id, month.i){
   
-  model_raw <- summary(lm('O3.PROXY~O3.RAW', data = input_data))
-  model_pse <- summary(lm('O3.PROXY~O3.PSE', data = input_data))
-  model_aq <- summary(lm('O3.PROXY~O3.AQ', data = input_data))
+  model_raw <- summary(lm('POL.PROXY~POL.RAW', data = input_data))
+  model_pse <- summary(lm('POL.PROXY~POL.PSE', data = input_data))
+  model_aq <- summary(lm('POL.PROXY~POL.AQ', data = input_data))
   
   r_sq <- data.frame(cbind(month.i, round(model_raw$r.squared, 5), round(model_pse$r.squared, 5), round(model_aq$r.squared, 5)))
   colnames(r_sq) <- c('month', 'raw', 'PSE', 'AQ')
@@ -154,12 +157,12 @@ get_lms <- function(input_data, aqy_id, month.i){
 ```
 
 ```{r}
-get_offset_timeseries <- function(input_data, aqy_id){
+get_offset_timeseries <- function(input_data, aqy_id, pollutant){
   
   offset_timeseries <- ggplot(input_data) +
-    geom_line(aes(x = TIMESTAMP, y = O3.OFFSET.PSE, color = 'pse')) +
-    geom_line(aes(x = TIMESTAMP, y = O3.OFFSET.AQ, color = 'aeroqual'))  +
-    ggtitle(paste('Offset Over Time for', aqy_id)) +
+    geom_line(aes(x = TIMESTAMP, y = POL.OFFSET.PSE, color = 'pse')) +
+    geom_line(aes(x = TIMESTAMP, y = POL.OFFSET.AQ, color = 'aeroqual'))  +
+    ggtitle(paste(pollutant, 'Offset Over Time for', aqy_id)) +
     theme(plot.title = element_text(hjust = .5))
   
   print(offset_timeseries)
@@ -167,12 +170,12 @@ get_offset_timeseries <- function(input_data, aqy_id){
 ```
 
 ```{r}
-get_gain_timeseries <- function(input_data, aqy_id){
+get_gain_timeseries <- function(input_data, aqy_id, pollutant){
   
   gain_timeseries <- ggplot(input_data) +
-    geom_line(aes(x = TIMESTAMP, y = O3.GAIN.PSE, color = 'pse')) +
-    geom_line(aes(x = TIMESTAMP, y = O3.GAIN.AQ, color = 'aeroqual')) +
-    ggtitle(paste('Gain Over Time for', aqy_id)) +
+    geom_line(aes(x = TIMESTAMP, y = POL.GAIN.PSE, color = 'pse')) +
+    geom_line(aes(x = TIMESTAMP, y = POL.GAIN.AQ, color = 'aeroqual')) +
+    ggtitle(paste(pollutant, 'Gain Over Time for', aqy_id)) +
     theme(plot.title = element_text(hjust = .5))
   
   print(gain_timeseries)
@@ -181,13 +184,13 @@ get_gain_timeseries <- function(input_data, aqy_id){
 ```
 
 ```{r}
-get_r2_plot <- function(input_data, aqy_id){
+get_r2_plot <- function(input_data, aqy_id, pollutant){
   
   r2_plot <- ggplot(input_data) +
     geom_line(aes(x = as.numeric(month), y = as.numeric(AQ), color = 'aeroqual')) +
     geom_line(aes(x = as.numeric(month), y = as.numeric(PSE), color = 'pse')) +
     labs(x = 'Month', y = 'R^2', 
-         title = paste('Proxy ~ Measured R^2 Over Time for', aqy_id))  +
+         title = paste(pollutant, 'Proxy ~ Measured R^2 Over Time for', aqy_id))  +
     theme(plot.title = element_text(hjust = .5))
   
   print(r2_plot)
@@ -200,47 +203,58 @@ months <- c('07', '08', '09', '10', '11', '12')
 ```
 
 ```{r}
-make_all_plots <- function(aqy_id){
+make_all_plots <- function(input_data, aqy_id, pollutant){
+  
+  colnames(input_data) <- str_replace_all(colnames(input_data), pollutant, 'POL')
   
   monthly_models <- data.frame()
   
   for(month.i in months){
     
-    data_for_month <- filter(O3_data, ID == aqy_id & TIME >= paste0('2020-', month.i, '-01 00:00:00') & TIME <= paste0('2020-', month.i, '-31 23:59:59'))
+    data_for_month <- filter(input_data, ID == aqy_id & TIME >= paste0('2020-', month.i, '-01 00:00:00') & TIME <= paste0('2020-', month.i, '-31 23:59:59'))
     
-    get_timeseries(data_for_month, aqy_id, month.i)
+    get_timeseries(data_for_month, aqy_id, month.i, pollutant)
     
-    get_error_timeseries(data_for_month, aqy_id, month.i)
+    get_error_timeseries(data_for_month, aqy_id, month.i, pollutant)
     
-    get_scatterplot(data_for_month, aqy_id, month.i)
+    get_scatterplot(data_for_month, aqy_id, month.i, pollutant)
     
     month.i_model <- get_lms(data_for_month, aqy_id, month.i)
     monthly_models <- rbind(monthly_models, month.i_model)
     
   }
   
-  data_for_deployment <- filter(O3_data, ID == aqy_id)
+  data_for_deployment <- filter(input_data, ID == aqy_id)
   
   overall_model <- get_lms(data_for_deployment, aqy_id, 'Full Deployment')
   all_models <- rbind(overall_model, monthly_models)
   print(all_models)
   
-  get_r2_plot(monthly_models, aqy_id)
+  get_r2_plot(monthly_models, aqy_id, pollutant)
   
-  get_offset_timeseries(data_for_deployment, aqy_id)
+  get_offset_timeseries(data_for_deployment, aqy_id, pollutant)
   
-  get_gain_timeseries(data_for_deployment, aqy_id)
+  get_gain_timeseries(data_for_deployment, aqy_id, pollutant)
   
 }
 ```
 
 ```{r}
-make_all_plots('AQY BB-642')
+make_all_plots(O3_data, 'AQY BB-633', 'O3')
 ```
 
 ```{r}
-make_all_plots('AQY BB-633')
+make_all_plots(O3_data, 'AQY BB-642', 'O3')
 ```
+
+```{r}
+make_all_plots(NO2_data, 'AQY BB-633', 'NO2')
+```
+
+```{r}
+make_all_plots(NO2_data, 'AQY BB-642', 'NO2')
+```
+
 
 ### MANUAL PLOTS
 ```{r}
@@ -256,7 +270,7 @@ get_scatter_facet_aqy <- function(in_data, pollutant, aqy_id){
       geom_point(aes(x = POL.PROXY, y = POL.RAW, color = 'Raw'), size = .5, alpha = .5) +
       geom_point(aes(x = POL.PROXY, y = POL.AQ, color = 'Aeroqual'), size = .5, alpha = .5) +
       geom_point(aes(x = POL.PROXY, y = POL.PSE, color = 'PSE'), size = .5, alpha = .5) +
-      labs(x = 'Proxy Concentration (ppb)', y = 'Measured Concentration (ppb)', title = paste('Ozone Concentration & Calibration - ', aqy_id)) +
+      labs(x = 'Proxy Concentration (ppb)', y = 'Measured Concentration (ppb)', title = paste('Calibrated', pollutant, '& Proxy Values - ', aqy_id)) +
       theme(plot.title = element_text(hjust = .5)) +
       facet_wrap(~MONTH)
   
@@ -270,7 +284,9 @@ get_scatter_facet_aqy(NO2_data, 'NO2', 'AQY BB-633')
 get_scatter_facet_aqy(NO2_data, 'NO2', 'AQY BB-642')
 ```
 
+```{r}
 
+```
 
 
 

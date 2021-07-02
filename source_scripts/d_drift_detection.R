@@ -7,7 +7,7 @@ get_new_flags <- function(joined_data_72hr){
   drift_tests <- group_by(joined_data_72hr, ID) %>%
     summarize(manual_gain = sqrt(var(proxy_rand)/var(pollutant)),
               manual_offset = mean(proxy_rand) - manual_gain*mean(pollutant),
-              ks_p = suppressWarnings(ks.test(proxy_rand, pollutant, exact = F))$p.value, 
+              ks_p = suppressWarnings(ks.test(proxy_rand, pollutant, exact = F))$p.value,
               .groups = 'drop_last')
   
   drift_flags <- mutate(drift_tests,
@@ -28,6 +28,23 @@ get_new_flags <- function(joined_data_72hr){
     {print('No AQYs flagged for this period')}
   
   return(new_flags)
+}
+
+
+
+# Assign all flags - for use when there aren't enough data to run tests
+### Make more robust later - need to check for monitors that are missing while others are present and this wont work for those purposes
+flag_all_monitors <- function(aqy_proxy_data){
+  
+  ID <- c('AQY BB-633', 'AQY BB-642') #Later - filter by look_back_from_date - td_72hr >= deployment_date to get expected monitors during time period
+  
+  all_aqys_flagged <- data.frame(ID) %>%
+    mutate(gain_new = 1, offset_new = 1, ks_new = 1)
+  
+  print('All AQYs flagged for period due to insufficient data')
+  
+  return(all_aqys_flagged)
+  
 }
 
 
@@ -64,13 +81,13 @@ sum_old_and_new_flags <- function(pollutant, new_flags, look_back_from_time){
 
 
 get_aqys_needing_recal <- function(summed_flags){
-  
+
   largest_running_flag <- apply(X = summed_flags[2:4], MARGIN = 1, FUN = max)
-  
+
   summed_flags$max_flag <- largest_running_flag
-  
+
   largest_flag_network <- max(largest_running_flag)
-  
+
   print(paste('Largest flag:', largest_flag_network))
   
   aqys_needing_recal <- filter(summed_flags, max_flag >= 24*5) %>%
