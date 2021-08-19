@@ -153,10 +153,8 @@ get_current_proxy_data <- function(pollutant){
   
   updated_proxy_data <- process_and_write_proxy_data(pollutant, updated_proxy_data_raw)
   
-  # This line to be modified when more monitors included
   updated_filtered_proxy_data <- mutate(updated_proxy_data, timestamp_pacific = format_timestamp(ymd_hms(timestamp_utc) - td_hour*8)) %>%
-    filter(proxy_site == 'San Pablo - Rumrill') %>%
-    dplyr::select(timestamp_pacific, proxy_rand)
+    dplyr::select(timestamp_pacific, proxy_site, proxy_rand)
   
   return(updated_filtered_proxy_data)
   

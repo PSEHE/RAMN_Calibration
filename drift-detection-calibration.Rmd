@@ -35,16 +35,22 @@ source('source_scripts/f_combine_into_framework.R')
 ```{r}
 pollutant <- 'NO2'
 
+site.col <- paste0(pollutant, '.proxy')
+
+proxy.sites <- read.csv('proxy_sites.csv') %>%
+  mutate(ID = paste('AQY', ID)) %>%
+  dplyr::select(all_of(c('ID', site.col))) %>%
+  rename('proxy_site'=site.col)
+
 proxy.data <- get_current_proxy_data(pollutant)
 
 aqy.data <- suppressWarnings(read_aqy_data())
 
-aqy.proxy.data.raw <- inner_join(aqy.data, proxy.data, by = 'timestamp_pacific') %>%
-  filter(ID %in% c('AQY BB-642', 'AQY BB-633'))
+aqy.proxy.data.raw <- inner_join(aqy.data, proxy.sites, by = 'ID') %>%
+  inner_join(., proxy.data, by = c('proxy_site', 'timestamp_pacific'))
 
 aqy.proxy.data <- calibrate_O3_data(aqy.proxy.data.raw) %>%
   calibrate_NO2_data()
-
 ```
 
 ```{r}

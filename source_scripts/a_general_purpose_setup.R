@@ -37,3 +37,4 @@ reset_flags <- function(pollutant){
   
   print(paste('Reset', pollutant, 'flags - restarting drift detection at zero'))
 }
+
