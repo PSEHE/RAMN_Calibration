@@ -3,7 +3,7 @@
 
 # Get flags for current 72-hr period
 get_new_flags <- function(joined_data_72hr){
-  
+
   drift_tests <- group_by(joined_data_72hr, ID) %>%
     summarize(manual_gain = sqrt(var(proxy_rand)/var(pollutant)),
               manual_offset = mean(proxy_rand) - manual_gain*mean(pollutant),
@@ -34,9 +34,9 @@ get_new_flags <- function(joined_data_72hr){
 
 # Assign all flags - for use when there aren't enough data to run tests
 ### Make more robust later - need to check for monitors that are missing while others are present and this wont work for those purposes
-flag_all_monitors <- function(aqy_proxy_data){
+flag_all_monitors <- function(joined_data_72hr, look_back_from_date){
   
-  ID <- c('AQY BB-633', 'AQY BB-642') #Later - filter by look_back_from_date - td_72hr >= deployment_date to get expected monitors during time period
+  ID <- unique(joined_data_72hr$ID)
   
   all_aqys_flagged <- data.frame(ID) %>%
     mutate(gain_new = 1, offset_new = 1, ks_new = 1)
@@ -48,10 +48,10 @@ flag_all_monitors <- function(aqy_proxy_data){
 }
 
 
-# Add together old and new flags - adjust time of flag detection if needed
-sum_old_and_new_flags <- function(pollutant, new_flags, look_back_from_time){
+# Add tgether old and new flags - adjust time of flag detection if needed
+sum_old_and_new_flags <- function(in_pollutant, new_flags, look_back_from_time){
   
-  flag_path <- paste0('results/running_flags/running_flags_', pollutant, '.csv')
+  flag_path <- paste0('results/running_flags/running_flags_', in_pollutant, '.csv')
   existing_flags <- read.csv(flag_path, stringsAsFactors = F)
 
   joined_flags <- full_join(existing_flags, new_flags, by = 'ID')

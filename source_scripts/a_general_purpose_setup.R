@@ -25,16 +25,18 @@ right.now <- format_timestamp(round(Sys.time(), 'hour'))
 
 
 # Function to reset all flags for manual use
-reset_flags <- function(pollutant){
+reset_flags <- function(in_pollutant){
   
-  file_with_flags <- paste0('results/running_flags/running_flags_', pollutant, '.csv')
+  file_with_flags <- paste0('results/running_flags/running_flags_', in_pollutant, '.csv')
   
   read.csv(file_with_flags) %>%
     mutate_at(.vars = c('ks', 'gain', 'offset'), .funs = ~.x*0) %>%
-    mutate(ks_detected = '2199-01-01 00:00:00', gain_detected = '2199-01-01 00:00:00', offset_detected = '2199-01-01 00:00:00',
+    mutate(ks_detected = '2199-01-01 00:00:00', 
+           gain_detected = '2199-01-01 00:00:00', 
+           offset_detected = '2199-01-01 00:00:00',
            time_of_first_flag = '2199-01-01 00:00:00') %>%
     write.csv(file_with_flags, row.names = F)
   
-  print(paste('Reset', pollutant, 'flags - restarting drift detection at zero'))
+  print(paste('Reset', in_pollutant, 'flags - restarting drift detection at zero'))
 }
 

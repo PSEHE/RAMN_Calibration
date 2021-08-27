@@ -16,6 +16,7 @@ library(dplyr)
 library(tidyr)
 library(lubridate)
 library(stringr)
+library(data.table)
 ```
 
 # Call in Constituent Functions from Other Scripts
@@ -29,28 +30,22 @@ source('source_scripts/f_combine_into_framework.R')
 ```
 
 #######################################
-# Run Everything
+# Run Gas Calibration
 #######################################
 
 ```{r}
-pollutant <- 'NO2'
+pollutant <- 'O3'
 
-site.col <- paste0(pollutant, '.proxy')
+proxy.data <- get_current_proxy_data(pollutant) %>%
+  rename('pollutant_proxy_site'='proxy_site')
 
-proxy.sites <- read.csv('proxy_sites.csv') %>%
-  mutate(ID = paste('AQY', ID)) %>%
-  dplyr::select(all_of(c('ID', site.col))) %>%
-  rename('proxy_site'=site.col)
+aqy.data.raw <- suppressWarnings(read_aqy_data())
 
-proxy.data <- get_current_proxy_data(pollutant)
+aqy.data <- calibrate_O3_data(aqy.data.raw) %>%
+  calibrate_NO2_data(.) %>%
+  rename_with(.fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
 
-aqy.data <- suppressWarnings(read_aqy_data())
-
-aqy.proxy.data.raw <- inner_join(aqy.data, proxy.sites, by = 'ID') %>%
-  inner_join(., proxy.data, by = c('proxy_site', 'timestamp_pacific'))
-
-aqy.proxy.data <- calibrate_O3_data(aqy.proxy.data.raw) %>%
-  calibrate_NO2_data()
+aqy.proxy.data <- inner_join(aqy.data, proxy.data, by = c('pollutant_proxy_site', 'timestamp_pacific'))
 ```
 
 ```{r}
@@ -76,8 +71,29 @@ while(look.back.from.time < 2021){
 ```
 
 
+#######################################
+# Run Particle Calibration
+#######################################
+```{r}
+pollutant <- 'PM25'
 
+proxy.data.PM25 <- get_current_proxy_data('PM25') %>%
+  rename('pollutant_proxy_site'='proxy_site')
 
+aqy.data.raw.PM25 <- suppressWarnings(read_aqy_data())
+
+aqy.data.PM25 <- calibrate_PM25_data(aqy.data.raw.PM25) %>%
+  rename_with(.fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
+
+aqy.proxy.data.PM25 <- inner_join(aqy.data.PM25, proxy.data.PM25, by = c('pollutant_proxy_site', 'timestamp_pacific'))
+
+mid.month.PM25 <- aqy.proxy.data.PM25 %>%
+  mutate(time_month = month(timestamp_pacific), time_day_of_month = as.numeric(str_sub(timestamp_pacific, 9, 10)), 
+         time_year = year(timestamp_pacific), .after = 'timestamp_pacific') %>%
+  filter(time_day_of_month >= 12 & time_day_of_month <= 18)
+
+monthly.params.PM25 <- generate_new_gain_and_offset_PM25(mid.month.PM25)
+```
 
 
 

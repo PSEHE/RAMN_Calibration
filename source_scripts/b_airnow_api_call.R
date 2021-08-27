@@ -2,15 +2,15 @@
 
 
 # Check for existing proxy data - read if exists
-get_existing_proxy_data <- function(pollutant){
+get_existing_proxy_data <- function(in_pollutant){
   
-  existing_proxy_data_path <- paste0('results/proxy/', pollutant, '_proxy_data.csv')
+  existing_proxy_data_path <- paste0('results/proxy/', in_pollutant, '_proxy_data.csv')
   
   try(existing_proxy_data <- read.csv(existing_proxy_data_path, stringsAsFactors = F))
   
   if(!exists('existing_proxy_data', where = environment()))
     {existing_proxy_data <- data.frame()
-    print(paste('No existing proxy data for', pollutant, '- creating new'))}
+    print(paste('No existing proxy data for', in_pollutant, '- creating new'))}
   
   else(print(paste('Reading existing proxy data from', existing_proxy_data_path)))
   
@@ -43,7 +43,12 @@ find_starttime_proxy_request <- function(existing_proxy_data){
 
 
 # Build url for data request based on start date identified
-build_proxy_request_url <- function(pollutant, start_request){
+build_proxy_request_url <- function(in_pollutant, start_request){
+  
+  pollutant_for_url <- switch(in_pollutant, 
+                              'O3'='OZONE',
+                              'NO2'='NO2',
+                              'PM25'='PM25')
   
   month_after_start <- suppressWarnings(as.character(ymd_hms(start_request) + td_30day))
   
@@ -57,12 +62,12 @@ build_proxy_request_url <- function(pollutant, start_request){
   
   request_url = paste0('http://www.airnowapi.org/aq/data/?',
                        'startDate=', first_date_needed, 'T', first_hour_needed, '&endDate=', last_date_needed, 'T', last_hour_needed, 
-                       '&parameters=', pollutant,
+                       '&parameters=', pollutant_for_url,
                        '&BBOX=-122.617880,37.639710,-121.706015,38.177130',
                        '&dataType=C&format=application/json&verbose=1&nowcastonly=0&includerawconcentrations=1',
                        '&API_KEY=C05358E3-5508-4216-A03E-E229E0368B7E')
   
-  print(paste('Requesting proxy data from Air District for', pollutant, 'from', first_date_needed, first_hour_needed, 'to', last_date_needed, last_hour_needed))
+  print(paste('Requesting proxy data from Air District for', pollutant_for_url, 'from', first_date_needed, first_hour_needed, 'to', last_date_needed, last_hour_needed))
   
   return(request_url)
 }
@@ -103,13 +108,13 @@ clean_new_proxy_data <- function(new_proxy_data){
 
 
 # Iterate through dates up to yesterday one week at a time until proxy data current
-request_all_dates_needed <- function(pollutant, request_start_time, existing_proxy_data){
+request_all_dates_needed <- function(in_pollutant, request_start_time, existing_proxy_data){
   
   proxy_data <- existing_proxy_data
   
   while(request_start_time < yesterday){  
     
-    request_url <- build_proxy_request_url(pollutant, request_start_time)
+    request_url <- build_proxy_request_url(in_pollutant, request_start_time)
     
     new_proxy_data_raw <- request_new_proxy_data(request_url)
     new_proxy_data <- clean_new_proxy_data(new_proxy_data_raw)
@@ -127,15 +132,15 @@ request_all_dates_needed <- function(pollutant, request_start_time, existing_pro
 
 
 # Remove duplicate values and write to csv
-process_and_write_proxy_data <- function(pollutant, proxy_data){
+process_and_write_proxy_data <- function(in_pollutant, proxy_data){
   
   proxy_data_no_duplicates <- group_by(proxy_data, proxy_site, timestamp_utc) %>%
     slice_sample() %>%
     ungroup()
   
-  print(paste('Proxy data for', pollutant, 'now current - writing to results/proxy'))
+  print(paste('Proxy data for', in_pollutant, 'now current - writing to results/proxy'))
   
-  write.csv(proxy_data_no_duplicates, paste0('results/proxy/', pollutant, '_proxy_data.csv'), row.names = F)
+  write.csv(proxy_data_no_duplicates, paste0('results/proxy/', in_pollutant, '_proxy_data.csv'), row.names = F)
   
   return(proxy_data_no_duplicates)
 }
@@ -143,15 +148,15 @@ process_and_write_proxy_data <- function(pollutant, proxy_data){
 
 
 # Function to Put it Together
-get_current_proxy_data <- function(pollutant){
+get_current_proxy_data <- function(in_pollutant){
   
-  existing_proxy_data <- get_existing_proxy_data(pollutant)
+  existing_proxy_data <- get_existing_proxy_data(in_pollutant)
   
   request_start_time <- find_starttime_proxy_request(existing_proxy_data)
   
-  updated_proxy_data_raw <- request_all_dates_needed(pollutant, request_start_time, existing_proxy_data)
+  updated_proxy_data_raw <- request_all_dates_needed(in_pollutant, request_start_time, existing_proxy_data)
   
-  updated_proxy_data <- process_and_write_proxy_data(pollutant, updated_proxy_data_raw)
+  updated_proxy_data <- process_and_write_proxy_data(in_pollutant, updated_proxy_data_raw)
   
   updated_filtered_proxy_data <- mutate(updated_proxy_data, timestamp_pacific = format_timestamp(ymd_hms(timestamp_utc) - td_hour*8)) %>%
     dplyr::select(timestamp_pacific, proxy_site, proxy_rand)

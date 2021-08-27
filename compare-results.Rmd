@@ -23,43 +23,41 @@ source('source_scripts/b_airnow_api_call.R')
 
 ### Prepare Data
 ```{r}
-params_aq <- read.csv("../aeroqual/2021-06/pse_calvals_2021-06.csv")
+params_aq <- read.csv("../aeroqual/2021-07/pse_calvals_2021-07.csv")
 
-param_paths_pse_all_O3 <- list.files('results', 'OZONE*', full.names = T)
+param_paths_pse_all_O3 <- list.files('results', 'O3*', full.names = T)
 param_path_pse_current_O3 <- param_paths_pse_all_O3[length(param_paths_pse_all_O3)]
 params_pse_O3 <- read.csv(param_path_pse_current_O3)
 
 param_paths_pse_all_NO2 <- list.files('results', 'NO2*', full.names = T)
 param_path_pse_current_NO2 <- param_paths_pse_all_NO2[length(param_paths_pse_all_NO2)]
 params_pse_NO2 <- read.csv(param_path_pse_current_NO2)
-
-raw_data <- read.csv('raw_data/raw_60_min.csv') %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642'))
 ```
 
 ```{r}
-proxy_O3 <- get_current_proxy_data('OZONE')
+raw_data <- read.csv('raw_data/raw_60_min.csv')
+```
+
+```{r}
+proxy_O3 <- get_current_proxy_data('O3')
 
 proxy_NO2 <- get_current_proxy_data('NO2')
+
+proxy_sites <- read.csv('proxy_sites.csv')
 ```
 
 ```{r}
 O3_data_aq <- inner_join(params_aq, raw_data, by = 'ID') %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
   filter(Time >= deployment_date & Time >= start_date & Time <= end_date & Time < 2021) %>%
-  transmute(ID=ID, TIME=Time, O3.RAW = O3_raw,
-            O3.AQ = round(O3.gain*(O3_raw - O3.offset), 2),
-            O3.GAIN.AQ=O3.gain, O3.OFFSET.AQ=O3.offset)
+  transmute(ID=ID, TIME=Time, O3.RAW = O3_raw, O3.AQ = round(O3.gain*(O3_raw - O3.offset), 2), O3.GAIN.AQ=O3.gain, O3.OFFSET.AQ=O3.offset)
 
 O3_data_pse <- inner_join(params_pse_O3, raw_data, by = 'ID') %>%
-  filter(ID %in% c('AQY BB-633', 'AQY BB-642')) %>%
   filter(Time >= deployment_date & Time >= start_date & Time <= end_date & Time < 2021) %>%
-  transmute(ID=ID, TIME=Time,
-            O3.PSE = round(O3.offset + O3.gain*O3_raw, 2),
-            O3.GAIN.PSE=O3.gain, O3.OFFSET.PSE=O3.offset)
+  transmute(ID=ID, TIME=Time, O3.PSE = round(O3.offset + O3.gain*O3_raw, 2), O3.GAIN.PSE=O3.gain, O3.OFFSET.PSE=O3.offset)
 
 O3_data <- inner_join(O3_data_aq, O3_data_pse, by = c('ID', 'TIME')) %>%
-  inner_join(., proxy_O3, by = c('TIME'='timestamp_pacific')) %>%
+  inner_join(., proxy_sites, by = 'ID') %>%
+  inner_join(., proxy_O3, by = c('TIME'='timestamp_pacific', 'O3.proxy'='proxy_site')) %>%
   mutate(TIMESTAMP = ymd_hms(TIME), O3.PROXY = round(proxy_rand, 2)) %>%
   dplyr::select(ID, TIME, TIMESTAMP, O3.RAW, O3.PROXY, O3.AQ, O3.PSE, O3.GAIN.AQ, O3.GAIN.PSE, O3.OFFSET.AQ, O3.OFFSET.PSE) %>%
   filter(O3.GAIN.PSE != 1)
@@ -276,6 +274,10 @@ get_scatter_facet_aqy <- function(in_data, pollutant, aqy_id){
   
   return(scatter_facet)
 }
+```
+
+```{r}
+aqys <- unique(O3_data$ID)
 
 get_scatter_facet_aqy(O3_data, 'O3', 'AQY BB-633')
 get_scatter_facet_aqy(O3_data, 'O3', 'AQY BB-642')
@@ -285,10 +287,9 @@ get_scatter_facet_aqy(NO2_data, 'NO2', 'AQY BB-642')
 ```
 
 ```{r}
+lapply(aqys, get_scatter_facet_aqy, in_data=O3_data, pollutant='O3')
 
 ```
-
-
 
 
 
