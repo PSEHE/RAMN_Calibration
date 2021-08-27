@@ -43,7 +43,8 @@ calibrate_O3_data <- function(aqy_data_raw){
   params_O3 <- get_current_params(in_pollutant='O3')
   
   data_plus_params_O3 <- inner_join(params_O3, aqy_data_raw, by = 'ID') %>%
-    filter(timestamp_pacific >= deployment_datetime & timestamp_pacific >= start_date & timestamp_pacific <= end_date)
+    filter(timestamp_pacific >= deployment_datetime & timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+    rename('O3_raw'='O3', 'Ox_raw'='Ox', 'NO2_raw'='NO2')
   
   aqy_data_O3 <- mutate(data_plus_params_O3, O3 = O3.offset + (O3.gain*O3_raw)) %>%
     dplyr::select(ID, timestamp_pacific, TEMP, RH, DP, Ox_raw, NO2_raw, O3, O3_raw, O3_proxy_site)
@@ -59,10 +60,11 @@ calibrate_PM25_data <- function(aqy_data_raw){
   params_PM25 <- get_current_params(in_pollutant='PM25')
   
   data_plus_params_PM25 <- inner_join(params_PM25, aqy_data_raw, by = 'ID') %>%
-    filter(timestamp_pacific >= deployment_datetime & timestamp_pacific >= start_date & timestamp_pacific <= end_date)
+    filter(timestamp_pacific >= deployment_datetime & timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+    rename('PM25_aqrh'='PM25')
   
   aqy_data_PM25 <- mutate(data_plus_params_PM25, PM25 = PM25.offset + (PM25.gain*PM25_raw)) %>%
-    dplyr::select(ID, timestamp_pacific, TEMP, RH, DP, PM25, PM25_raw, PM25_proxy_site)
+    dplyr::select(ID, timestamp_pacific, TEMP, RH, DP, PM25, PM25_aqrh, PM25_raw, PM25_proxy_site)
   
   return(aqy_data_PM25)
   

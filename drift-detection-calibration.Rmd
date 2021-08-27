@@ -85,12 +85,12 @@ aqy.data.raw.PM25 <- suppressWarnings(read_aqy_data())
 aqy.data.PM25 <- calibrate_PM25_data(aqy.data.raw.PM25) %>%
   rename_with(.fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
 
-aqy.proxy.data.PM25 <- inner_join(aqy.data.PM25, proxy.data.PM25, by = c('pollutant_proxy_site', 'timestamp_pacific'))
+aqy.proxy.data.PM25 <- inner_join(aqy.data.PM25, proxy.data.PM25, by = c('pollutant_proxy_site', 'timestamp_pacific')) %>%
+  mutate(time_month = month(timestamp_pacific), time_day_of_month = as.numeric(str_sub(timestamp_pacific, 9, 10)), time_year = year(timestamp_pacific), 
+         .after = 'timestamp_pacific')
 
-mid.month.PM25 <- aqy.proxy.data.PM25 %>%
-  mutate(time_month = month(timestamp_pacific), time_day_of_month = as.numeric(str_sub(timestamp_pacific, 9, 10)), 
-         time_year = year(timestamp_pacific), .after = 'timestamp_pacific') %>%
-  filter(time_day_of_month >= 12 & time_day_of_month <= 18)
+mid.month.PM25 <- aqy.proxy.data.PM25  %>%
+  filter(time_day_of_month >= 10 & time_day_of_month <= 19)
 
 monthly.params.PM25 <- generate_new_gain_and_offset_PM25(mid.month.PM25)
 ```
