@@ -17,6 +17,8 @@ library(tidyr)
 library(lubridate)
 library(stringr)
 library(data.table)
+library(ggplot2)
+library(Metrics)
 ```
 
 # Call in Constituent Functions from Other Scripts
@@ -30,22 +32,17 @@ source('source_scripts/f_combine_into_framework.R')
 ```
 
 #######################################
-# Run Gas Calibration
+# Run O3 Calibration
 #######################################
 
 ```{r}
 pollutant <- 'O3'
 
-proxy.data <- get_current_proxy_data(pollutant) %>%
-  rename('pollutant_proxy_site'='proxy_site')
+aqy.proxy.data.raw <- read_aqy_join_proxy(pollutant)
 
-aqy.data.raw <- suppressWarnings(read_aqy_data())
-
-aqy.data <- calibrate_O3_data(aqy.data.raw) %>%
+aqy.proxy.data <- calibrate_O3_data(aqy.proxy.data.raw) %>%
   calibrate_NO2_data(.) %>%
   rename_with(.fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
-
-aqy.proxy.data <- inner_join(aqy.data, proxy.data, by = c('pollutant_proxy_site', 'timestamp_pacific'))
 ```
 
 ```{r}
@@ -70,37 +67,123 @@ while(look.back.from.time < 2021){
 }
 ```
 
+#######################################
+# Run NO2 Calibration
+#######################################
+
+```{r}
+pollutant <- 'NO2'
+
+aqy.proxy.data.raw <- read_aqy_join_proxy(pollutant)
+
+aqy.proxy.data <- calibrate_O3_data(aqy.proxy.data.raw) %>%
+  calibrate_NO2_data(.) %>%
+  rename_with(.fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
+```
+
+```{r}
+reset_flags(pollutant)
+
+first.timestamp <- min(aqy.proxy.data$timestamp_pacific)
+
+look.back.from.time <- format_timestamp(ymd_hms(first.timestamp) + td_30day)
+
+```
+
+
+```{r}
+while(look.back.from.time < 2021){
+  
+  print(look.back.from.time)
+  
+  my.outputs <- detect_drift_recalibrate_data(aqy.proxy.data, aqy.proxy.data.raw, pollutant, look.back.from.time)
+  
+  aqy.proxy.data <- my.outputs$calibrated_data
+  look.back.from.time <- my.outputs$look_back_from_time
+  
+}
+```
 
 #######################################
 # Run Particle Calibration
 #######################################
+
+```{r}
+calibrate.pm25 <- function(cal_params){
+  
+  calibrated_data <- inner_join(aqy.proxy.data, cal_params, by = 'ID') %>%
+    filter(timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+    dplyr::select(ID, start_date, end_date, PM25.gain, PM25.offset, timestamp_pacific, TEMP, RH, proxy_rand, pollutant_raw) %>%
+    filter(timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+    rename('PM25_proxy'='proxy_rand', 'PM25_raw'='pollutant_raw') %>%
+    mutate(PM25 = PM25.gain*PM25_raw + PM25.offset) %>%
+    na.omit()
+  
+  return(calibrated_data)
+  
+}
+```
+
 ```{r}
 pollutant <- 'PM25'
 
-proxy.data.PM25 <- get_current_proxy_data('PM25') %>%
-  rename('pollutant_proxy_site'='proxy_site')
+aqy.proxy.data.raw <- read_aqy_join_proxy(pollutant) 
 
-aqy.data.raw.PM25 <- suppressWarnings(read_aqy_data())
-
-aqy.data.PM25 <- calibrate_PM25_data(aqy.data.raw.PM25) %>%
-  rename_with(.fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
-
-aqy.proxy.data.PM25 <- inner_join(aqy.data.PM25, proxy.data.PM25, by = c('pollutant_proxy_site', 'timestamp_pacific')) %>%
-  mutate(time_month = month(timestamp_pacific), time_day_of_month = as.numeric(str_sub(timestamp_pacific, 9, 10)), time_year = year(timestamp_pacific), 
-         .after = 'timestamp_pacific')
-
-mid.month.PM25 <- aqy.proxy.data.PM25  %>%
-  filter(time_day_of_month >= 10 & time_day_of_month <= 19)
-
-monthly.params.PM25 <- generate_new_gain_and_offset_PM25(mid.month.PM25)
+aqy.proxy.data <- calibrate_PM25_data(aqy.proxy.data.raw) %>%
+  rename_with(aqy.proxy.data, .fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
 ```
 
+```{r}
+data.pm25.5 <- aqy.proxy.data  %>%
+  filter(time_day_of_month %in% seq(1, 30, 6))
 
+data.pm25.10 <- aqy.proxy.data  %>%
+  filter(time_day_of_month %in% seq(1, 30, 3))
 
+data.pm25.15 <- aqy.proxy.data  %>%
+  filter(time_day_of_month %in% seq(1, 30, 2))
 
+cp.pm25.5 <- generate_new_gain_and_offset_PM25(data.pm25.5)
+cp.pm25.10 <- generate_new_gain_and_offset_PM25(data.pm25.10)
+cp.pm25.15 <- generate_new_gain_and_offset_PM25(data.pm25.15)
 
+```
+
+### Sensitivity Analysis
+
+```{r}
+pm25.5 <- calibrate.pm25(cp.pm25.5)
+pm25.10 <- calibrate.pm25(cp.pm25.10)
+pm25.15 <- calibrate.pm25(cp.pm25.15)
+```
+
+```{r}
+colocated.aqys <- c('AQY BB-633', 'AQY BB-642')
+
+pm25.5.spr <- filter(pm25.5, ID %in% colocated.aqys)
+pm25.10.spr <- filter(pm25.10, ID %in% colocated.aqys)
+pm25.15.spr <- filter(pm25.15, ID %in% colocated.aqys)
+```
+
+__RMSE for Each Time Period__
+```{r}
+rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25_raw)
+rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25)
+rmse(pm25.10.spr$PM25_proxy, pm25.10.spr$PM25)
+rmse(pm25.15.spr$PM25_proxy, pm25.15.spr$PM25)
+```
          
+```{r}
+lm.raw <- lm(PM25_proxy ~ PM25_raw, data = pm25.5)
+lm.5 <- lm(PM25_proxy ~ PM25, data = pm25.5)
+lm.10 <- lm(PM25_proxy ~ PM25, data = pm25.10)
+lm.15 <- lm(PM25_proxy ~ PM25, data = pm25.15)
 
+summary(lm.raw)$r.squared
+summary(lm.5)$r.squared
+summary(lm.10)$r.squared
+summary(lm.15)$r.squared
+```
 
 
 

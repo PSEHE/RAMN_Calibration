@@ -6,7 +6,7 @@ detect_drift_recalibrate_data <- function(aqy_proxy_data, aqy_proxy_data_raw, in
 
   aqy_proxy_data_72hr <- temporally_filter_data(aqy_proxy_data, look_back_from_time, td_72hr)
   print(paste('Performing drift detection for', look_back_from_time, 'with', nrow(aqy_proxy_data_72hr), 'rows of data'))
-  
+
   n_deployed <- length(unique(aqy_proxy_data_72hr$ID))
   if(nrow(aqy_proxy_data_72hr) < 0.75*72*n_deployed){
     new_flags <- flag_all_monitors(aqy_proxy_data_raw, look_back_from_time)}
@@ -39,7 +39,7 @@ detect_drift_recalibrate_data <- function(aqy_proxy_data, aqy_proxy_data_raw, in
     reset_flags(in_pollutant)
     
     aqy_proxy_data <- calibrate_O3_data(aqy_proxy_data_raw) 
-    if(pollutant == 'NO2'){aqy_proxy_data <- calibrate_NO2_data(aqy_proxy_data)}
+      if(pollutant == 'NO2'){aqy_proxy_data <- calibrate_NO2_data(aqy_proxy_data)}
     
     aqy_proxy_data <- rename_with(aqy_proxy_data, .fn = ~str_replace_all(.x, in_pollutant, 'pollutant'), .cols = everything())
     

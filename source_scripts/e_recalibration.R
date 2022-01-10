@@ -23,20 +23,19 @@ generate_new_gain_and_offset_O3 <- function(joined_data_30day, aqys_needing_reca
 generate_new_gain_and_offset_PM25 <- function(joined_midmonth_data){
   
   new_gain_and_offset <- joined_midmonth_data %>%
-    group_by(ID, time_month, time_year) %>%
+    group_by(ID, pollutant_proxy_site, time_month, time_year) %>%
     summarize(new.gain = round(sqrt(var(proxy_rand)/var(pollutant_raw)), 5),
               new.offset = round(mean(proxy_rand) - new.gain*mean(pollutant_raw), 5),
               .groups = 'drop_last')
   
-  new_col_names <- c('ID', 'time_month', 'time_year', 'PM25.gain', 'PM25.offset')
+  new_col_names <- c('ID', 'proxy_site', 'time_month', 'time_year', 'PM25.gain', 'PM25.offset')
   colnames(new_gain_and_offset) <- new_col_names
   
   new_gain_and_offset <- ungroup(new_gain_and_offset) %>%
     mutate(days_month = days_in_month(time_month), time_month = str_sub(paste0('0', time_month), -2L, -1L),
            start_date = paste(time_year, time_month, '01 00:00:00', sep = '-'), 
            end_date = paste0(time_year, '-', time_month, '-', days_month, ' 23:59:59')) %>%
-    dplyr::select(ID, start_date, end_date, PM25.gain, PM25.offset)
-  
+    dplyr::select(ID, proxy_site, start_date, end_date, PM25.gain, PM25.offset)
   
   return(new_gain_and_offset)
   
@@ -83,7 +82,9 @@ combine_params_get_first_flag <- function(new_params, in_pollutant){
   
   old_params <- get_current_params(in_pollutant)
   
-  aqy_metadata <- select(old_params, c('ID', 'deployment_date', 'deployment_datetime', 'Longitude', 'Latitude', 'proxy_site')) %>%
+  proxy_col <- paste0(in_pollutant, '_proxy_site')
+  
+  aqy_metadata <- select(old_params, c('ID', 'deployment_date', 'deployment_datetime', 'Longitude', 'Latitude', proxy_col)) %>%
     unique()
   
   aqys_recalibrated <- new_params$ID
@@ -94,7 +95,7 @@ combine_params_get_first_flag <- function(new_params, in_pollutant){
     unique()
 
   new_params_metadata <- inner_join(aqy_metadata, new_params, by = 'ID') %>%
-    mutate(start_date = format_timestamp(time_first_flagged), end_date = '2199-12-31 23:59:59', .after = proxy_site)
+    mutate(start_date = format_timestamp(time_first_flagged), end_date = '2199-12-31 23:59:59')
 
   combined_params <- rbind(old_params, new_params_metadata) %>%
     arrange(ID, start_date) %>%

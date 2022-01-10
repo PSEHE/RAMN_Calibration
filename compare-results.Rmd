@@ -23,7 +23,7 @@ source('source_scripts/b_airnow_api_call.R')
 
 ### Prepare Data
 ```{r}
-params_aq <- read.csv("../aeroqual/2021-07/pse_calvals_2021-07.csv")
+params_aq <- read.csv("../aeroqual/2021-09/pse_calvals_2021-09.csv")
 
 param_paths_pse_all_O3 <- list.files('results', 'O3*', full.names = T)
 param_path_pse_current_O3 <- param_paths_pse_all_O3[length(param_paths_pse_all_O3)]
@@ -35,7 +35,7 @@ params_pse_NO2 <- read.csv(param_path_pse_current_NO2)
 ```
 
 ```{r}
-raw_data <- read.csv('raw_data/raw_60_min.csv')
+raw_data <- read.csv('raw_data/PSE_AQY_60_min_2021-08-27_RAW_NOFLAGS.csv')
 ```
 
 ```{r}
