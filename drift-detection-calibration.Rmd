@@ -133,33 +133,39 @@ aqy.proxy.data <- calibrate_PM25_data(aqy.proxy.data.raw) %>%
   rename_with(aqy.proxy.data, .fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
 ```
 
+### Sensitivity Analysis
+
 ```{r}
-data.pm25.5 <- aqy.proxy.data  %>%
-  filter(time_day_of_month %in% seq(1, 30, 6))
+data.pm25.1 <- filter(aqy.proxy.data, time_day_of_month == 15)
+data.pm25.2 <- filter(aqy.proxy.data, time_day_of_month %in% seq(1, 30, 15))
+data.pm25.3 <- filter(aqy.proxy.data, time_day_of_month %in% seq(1, 30, 10))
+data.pm25.4 <- filter(aqy.proxy.data, time_day_of_month %in% seq(1, 30, 8))
+data.pm25.5 <- filter(aqy.proxy.data, time_day_of_month %in% seq(1, 30, 6))
+data.pm25.10 <- filter(aqy.proxy.data, time_day_of_month %in% seq(1, 30, 3))
+data.pm25.15 <- filter(aqy.proxy.data, time_day_of_month %in% seq(1, 30, 2))
 
-data.pm25.10 <- aqy.proxy.data  %>%
-  filter(time_day_of_month %in% seq(1, 30, 3))
-
-data.pm25.15 <- aqy.proxy.data  %>%
-  filter(time_day_of_month %in% seq(1, 30, 2))
-
+cp.pm25.1 <- generate_new_gain_and_offset_PM25(data.pm25.1)
+cp.pm25.2 <- generate_new_gain_and_offset_PM25(data.pm25.2)
+cp.pm25.3 <- generate_new_gain_and_offset_PM25(data.pm25.3)
+cp.pm25.4 <- generate_new_gain_and_offset_PM25(data.pm25.4)
 cp.pm25.5 <- generate_new_gain_and_offset_PM25(data.pm25.5)
 cp.pm25.10 <- generate_new_gain_and_offset_PM25(data.pm25.10)
 cp.pm25.15 <- generate_new_gain_and_offset_PM25(data.pm25.15)
 
-```
-
-### Sensitivity Analysis
-
-```{r}
+pm25.1 <- calibrate.pm25(cp.pm25.1)
+pm25.2 <- calibrate.pm25(cp.pm25.2)
+pm25.3 <- calibrate.pm25(cp.pm25.3)
+pm25.4 <- calibrate.pm25(cp.pm25.4)
 pm25.5 <- calibrate.pm25(cp.pm25.5)
 pm25.10 <- calibrate.pm25(cp.pm25.10)
 pm25.15 <- calibrate.pm25(cp.pm25.15)
-```
 
-```{r}
 colocated.aqys <- c('AQY BB-633', 'AQY BB-642')
 
+pm25.1.spr <- filter(pm25.1, ID %in% colocated.aqys)
+pm25.2.spr <- filter(pm25.2, ID %in% colocated.aqys)
+pm25.3.spr <- filter(pm25.3, ID %in% colocated.aqys)
+pm25.4.spr <- filter(pm25.4, ID %in% colocated.aqys)
 pm25.5.spr <- filter(pm25.5, ID %in% colocated.aqys)
 pm25.10.spr <- filter(pm25.10, ID %in% colocated.aqys)
 pm25.15.spr <- filter(pm25.15, ID %in% colocated.aqys)
@@ -167,25 +173,64 @@ pm25.15.spr <- filter(pm25.15, ID %in% colocated.aqys)
 
 __RMSE for Each Time Period__
 ```{r}
-rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25_raw)
-rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25)
-rmse(pm25.10.spr$PM25_proxy, pm25.10.spr$PM25)
-rmse(pm25.15.spr$PM25_proxy, pm25.15.spr$PM25)
+rmse.raw <- rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25_raw)
+rmse.1 <- rmse(pm25.1.spr$PM25_proxy, pm25.1.spr$PM25)
+rmse.2 <- rmse(pm25.2.spr$PM25_proxy, pm25.2.spr$PM25)
+rmse.3 <- rmse(pm25.3.spr$PM25_proxy, pm25.3.spr$PM25)
+rmse.4 <- rmse(pm25.4.spr$PM25_proxy, pm25.4.spr$PM25)
+rmse.5 <- rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25)
+rmse.10 <- rmse(pm25.10.spr$PM25_proxy, pm25.10.spr$PM25)
+rmse.15 <- rmse(pm25.15.spr$PM25_proxy, pm25.15.spr$PM25)
+
+days.used <- c(0, 1, 2, 3, 4, 5, 10, 15)
+
+rmses <- data.frame('days_used'= days.used, 
+                    'rmse'=c(rmse.raw, rmse.1, rmse.2, rmse.3, rmse.4, rmse.5, rmse.10, rmse.15))
+
+rmses
+
+ggplot() + geom_line(data = rmses, aes(x = days_used, y = rmse), size = 1, color = 'orange2') +
+  labs(x = 'Days of Data Used in Calibration', y = 'Root Mean Squared Error', title = 'Change in Error with Days of Data Used for Recalibration - PM2.5')
 ```
          
 ```{r}
-lm.raw <- lm(PM25_proxy ~ PM25_raw, data = pm25.5)
-lm.5 <- lm(PM25_proxy ~ PM25, data = pm25.5)
-lm.10 <- lm(PM25_proxy ~ PM25, data = pm25.10)
-lm.15 <- lm(PM25_proxy ~ PM25, data = pm25.15)
+lm.raw <- lm(PM25_proxy ~ PM25_raw, data = pm25.5.spr)
+lm.1 <- lm(PM25_proxy ~ PM25, data = pm25.1.spr)
+lm.2 <- lm(PM25_proxy ~ PM25, data = pm25.2.spr)
+lm.3 <- lm(PM25_proxy ~ PM25, data = pm25.3.spr)
+lm.4 <- lm(PM25_proxy ~ PM25, data = pm25.4.spr)
+lm.5 <- lm(PM25_proxy ~ PM25, data = pm25.5.spr)
+lm.10 <- lm(PM25_proxy ~ PM25, data = pm25.10.spr)
+lm.15 <- lm(PM25_proxy ~ PM25, data = pm25.15.spr)
 
-summary(lm.raw)$r.squared
-summary(lm.5)$r.squared
-summary(lm.10)$r.squared
-summary(lm.15)$r.squared
+r2.raw <- summary(lm.raw)$r.squared
+r2.1 <- summary(lm.1)$r.squared
+r2.2 <- summary(lm.2)$r.squared
+r2.3 <- summary(lm.3)$r.squared
+r2.4 <- summary(lm.4)$r.squared
+r2.5 <- summary(lm.5)$r.squared
+r2.10 <- summary(lm.10)$r.squared
+r2.15 <- summary(lm.15)$r.squared
+
+r2s <- data.frame('days_used'=days.used,
+                  'r2'=c(r2.raw, r2.1, r2.2, r2.3, r2.4, r2.5, r2.10, r2.15))
+
+r2s
+
+ggplot() + geom_line(data = r2s, aes(x = days_used, y = r2), size = 1, color = 'blue3') +
+  labs(x = 'Days of Data Used in Calibration', y = 'R^2', title = 'Change in R2 with Days of Data Used for Recalibration - PM2.5')
 ```
 
-
+```{r}
+ggplot() +
+  geom_line(data = pm25.5.spr, aes(x = PM25_proxy, y = PM25_proxy)) +
+  geom_point(data = pm25.1.spr, aes(x = PM25_proxy, y = PM25), color = 'gray50') +
+  geom_point(data = pm25.5.spr, aes(x = PM25_proxy, y = PM25), color = 'coral') +
+  geom_point(data = pm25.10.spr, aes(x = PM25_proxy, y = PM25), color = 'cyan3') +
+  geom_point(data = pm25.15.spr, aes(x = PM25_proxy, y = PM25), color = 'navy') +
+  facet_wrap(~ID) +
+  scale_color_manual(values = c('Raw', '5 days', '10 days', '15 days'))
+```
 
 
 

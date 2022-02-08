@@ -19,7 +19,7 @@ generate_new_gain_and_offset_O3 <- function(joined_data_30day, aqys_needing_reca
 }
 
 
-# Generate new offset and gain using simple formula and thirty days of data
+# Generate new offset and gain using simple formula
 generate_new_gain_and_offset_PM25 <- function(joined_midmonth_data){
   
   new_gain_and_offset <- joined_midmonth_data %>%

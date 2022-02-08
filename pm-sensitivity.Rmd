@@ -1,0 +1,268 @@
+---
+title: "Richmond Network Complete Calibration Framework"
+author: "Audrey Smith"
+date: "5/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(stringr)
+library(data.table)
+library(ggplot2)
+library(Metrics)
+```
+
+# Call in Constituent Functions from Other Scripts
+```{r}
+source('source_scripts/a_general_purpose_setup.R')
+source('source_scripts/b_airnow_api_call.R')
+source('source_scripts/c_read_calibrate_filter_aqy_data.R')
+source('source_scripts/d_drift_detection.R')
+source('source_scripts/e_recalibration.R')
+source('source_scripts/f_combine_into_framework.R')
+```
+
+#######################################
+# Run Particle Calibration
+#######################################
+
+```{r}
+calibrate.pm25 <- function(cal_params){
+  
+  calibrated_data <- inner_join(aqy.proxy.data, cal_params, by = 'ID') %>%
+    filter(timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+    dplyr::select(ID, start_date, end_date, PM25.gain, PM25.offset, timestamp_pacific, TEMP, RH, proxy_rand, pollutant_raw, pollutant_aqrh) %>%
+    filter(timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+    rename('PM25_proxy'='proxy_rand', 'PM25_raw'='pollutant_raw') %>%
+    mutate(PM25 = PM25.gain*PM25_raw + PM25.offset) %>%
+    na.omit()
+  
+  return(calibrated_data)
+  
+}
+```
+
+```{r}
+pollutant <- 'PM25'
+
+aqy.proxy.data.raw <- read_aqy_join_proxy(pollutant) 
+
+aqy.proxy.data <- calibrate_PM25_data(aqy.proxy.data.raw) %>%
+  rename_with(aqy.proxy.data, .fn = ~str_replace_all(.x, pollutant, 'pollutant'), .cols = everything())
+```
+
+### Sensitivity to Days of Proxy Data Used
+
+```{r}
+calibrate_varying_time <- function(date_vector, pm25_data=aqy.proxy.data){
+  
+  data.pm25.filter <- filter(pm25_data, time_day_of_month %in% date_vector)
+  
+  calvals.pm25 <- generate_new_gain_and_offset_PM25(data.pm25.filter)
+  
+  data.pm25.cal <- calibrate.pm25(calvals.pm25)
+  
+  data.pm25.cal.coloc <- filter(data.pm25.cal, ID %in% c('AQY BB-633', 'AQY BB-642'))
+  
+  return(data.pm25.cal.coloc)
+  
+}
+
+pm25.1.spr <- calibrate_varying_time(c(15))
+pm25.2.spr <- calibrate_varying_time(seq(1, 30, 15))
+pm25.3.spr <- calibrate_varying_time(seq(1, 30, 10))
+pm25.4.spr <- calibrate_varying_time(seq(1, 30, 8))
+pm25.5.spr <- calibrate_varying_time(seq(1, 30, 6))
+pm25.10.spr <- calibrate_varying_time(seq(1, 30, 3))
+pm25.15.spr <- calibrate_varying_time(seq(1, 30, 2))
+```
+
+__RMSE for Each Time Period__
+```{r}
+rmse.raw <- rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25_raw)
+rmse.1 <- rmse(pm25.1.spr$PM25_proxy, pm25.1.spr$PM25)
+rmse.2 <- rmse(pm25.2.spr$PM25_proxy, pm25.2.spr$PM25)
+rmse.3 <- rmse(pm25.3.spr$PM25_proxy, pm25.3.spr$PM25)
+rmse.4 <- rmse(pm25.4.spr$PM25_proxy, pm25.4.spr$PM25)
+rmse.5 <- rmse(pm25.5.spr$PM25_proxy, pm25.5.spr$PM25)
+rmse.10 <- rmse(pm25.10.spr$PM25_proxy, pm25.10.spr$PM25)
+rmse.15 <- rmse(pm25.15.spr$PM25_proxy, pm25.15.spr$PM25)
+
+days.used <- c(0, 1, 2, 3, 4, 5, 10, 15)
+
+rmses <- data.frame('days_used'= days.used, 
+                    'rmse'=c(rmse.raw, rmse.1, rmse.2, rmse.3, rmse.4, rmse.5, rmse.10, rmse.15))
+```
+
+```{r}
+rmses
+
+ggplot() + geom_line(data = rmses, aes(x = days_used, y = rmse), size = 1, color = 'orange2') +
+  labs(x = 'Days of Data Used in Calibration', y = 'Root Mean Squared Error', title = 'Change in Error with Days of Data Used for Recalibration - PM2.5')
+```
+         
+```{r}
+lm.raw <- lm(PM25_proxy ~ PM25_raw, data = pm25.5.spr)
+lm.1 <- lm(PM25_proxy ~ PM25, data = pm25.1.spr)
+lm.2 <- lm(PM25_proxy ~ PM25, data = pm25.2.spr)
+lm.3 <- lm(PM25_proxy ~ PM25, data = pm25.3.spr)
+lm.4 <- lm(PM25_proxy ~ PM25, data = pm25.4.spr)
+lm.5 <- lm(PM25_proxy ~ PM25, data = pm25.5.spr)
+lm.10 <- lm(PM25_proxy ~ PM25, data = pm25.10.spr)
+lm.15 <- lm(PM25_proxy ~ PM25, data = pm25.15.spr)
+
+r2.raw <- summary(lm.raw)$r.squared
+r2.1 <- summary(lm.1)$r.squared
+r2.2 <- summary(lm.2)$r.squared
+r2.3 <- summary(lm.3)$r.squared
+r2.4 <- summary(lm.4)$r.squared
+r2.5 <- summary(lm.5)$r.squared
+r2.10 <- summary(lm.10)$r.squared
+r2.15 <- summary(lm.15)$r.squared
+
+r2s <- data.frame('days_used'=days.used,
+                  'r2'=c(r2.raw, r2.1, r2.2, r2.3, r2.4, r2.5, r2.10, r2.15))
+```
+
+```{r}
+r2s
+
+ggplot() + geom_line(data = r2s, aes(x = days_used, y = r2), size = 1, color = 'blue3') +
+  labs(x = 'Days of Data Used in Calibration', y = 'R^2', title = 'Change in R2 with Days of Data Used for Recalibration - PM2.5')
+```
+
+```{r}
+ggplot() +
+  geom_line(data = pm25.5.spr, aes(x = PM25_proxy, y = PM25_proxy)) +
+  geom_point(data = pm25.1.spr, aes(x = PM25_proxy, y = PM25, color = 'gray50')) +
+  geom_point(data = pm25.3.spr, aes(x = PM25_proxy, y = PM25, color = 'orange3')) +
+  geom_point(data = pm25.5.spr, aes(x = PM25_proxy, y = PM25, color = 'coral')) +
+  geom_point(data = pm25.10.spr, aes(x = PM25_proxy, y = PM25, color = 'cyan3')) +
+  geom_point(data = pm25.15.spr, aes(x = PM25_proxy, y = PM25, color = 'navy')) +
+  xlim(c(0, 250)) + ylim(c(0, 250)) +
+  labs(title = 'Expected versus Observed PM25', x = 'PM2.5 Proxy Value (ug/m3)', y = 'PM2.5 calibrated value (ug/m3)') +
+  facet_wrap(~ID) +
+  scale_color_identity(name = 'Days of Proxy Data \nUsed to Recalibrate', guide = 'legend', labels = c('Raw', '3 days', '5 days', '10 days', '15 days'))
+```
+
+###Sensitivity to Proxy Site Used
+
+```{r}
+aqy.data <- aqy.proxy.data[,c('ID', 'timestamp_pacific', 'time_year', 'time_month', 'time_day_of_month', 'TEMP', 'RH', 'pollutant', 'pollutant_aqrh', 'pollutant_raw')]
+proxy.data <- unique(aqy.proxy.data[,c('pollutant_proxy_site', 'timestamp_pacific', 'proxy_rand')])
+
+aqy.proxy.all.sites <- inner_join(proxy.data, aqy.data, by = 'timestamp_pacific') %>%
+  filter(ID %in% c("AQY BB-633", "AQY BB-642") & time_day_of_month %in% seq(1, 30, 10))
+
+calvals.all.sites <- generate_new_gain_and_offset_PM25(aqy.proxy.all.sites)
+
+data.pm25.cal.allsites <- inner_join(aqy.proxy.all.sites, calvals.all.sites, ., by = c('ID', 'pollutant_proxy_site'='proxy_site')) %>%
+  filter(start_date <= timestamp_pacific & end_date >= timestamp_pacific) %>%
+  rename_with(.cols = everything(), .fn = ~str_replace(.x, 'pollutant', 'PM25')) %>%
+  mutate(PM25 = (PM25.gain*PM25_raw) + PM25.offset)
+```
+
+```{r}
+pm.cols <- c('PM25_proxy_site', 'ID', 'timestamp_pacific', 'proxy_rand', 'PM25_raw', 'PM25')
+
+sp.642 <- filter(data.pm25.cal.allsites, PM25_proxy_site == 'San Pablo - Rumrill' & ID == 'AQY BB-642')[, pm.cols]
+bk.642 <- filter(data.pm25.cal.allsites, PM25_proxy_site == 'Berkeley Aquatic Park' & ID == 'AQY BB-642')[, pm.cols]
+
+summary(lm(formula = 'PM25 ~ PM25_raw + proxy_rand', data = sp.642))
+summary(lm(formula = 'PM25 ~ PM25_raw + proxy_rand', data = bk.642))
+
+sp.642
+
+ggplot() + 
+  geom_point(data = sp.642, aes(x = proxy_rand, y = PM25, color = 'cyan2')) +
+  geom_point(data = sp.642, aes(x = PM25_raw, y = PM25, color = 'cyan4')) +
+  geom_point(data = bk.642, aes(x = proxy_rand, y = PM25, color = 'orange')) +
+  geom_point(data = bk.642, aes(x = PM25_raw, y = PM25, color = 'orange3')) +
+  labs(title = 'Predictors of Calibrated PM2.5 (AQY 642)', x = 'Proxy or Raw PM2.5 (ug/m3)', y = 'Calibrated PM2.5 (ug/m3') +
+  scale_color_identity(name = 'X-Axis Correlate of Calibrated PM2.5', guide = 'legend', labels = c('SP Proxy', 'SP Raw Sensor', 'BK Proxy', 'BK Raw Sensor'))
+```
+
+```{r}
+sp.633 <- filter(data.pm25.cal.allsites, PM25_proxy_site == 'San Pablo - Rumrill' & ID == 'AQY BB-633')
+bk.633 <- filter(data.pm25.cal.allsites, PM25_proxy_site == 'Berkeley Aquatic Park' & ID == 'AQY BB-633')
+
+summary(lm(formula = 'PM25 ~ PM25_raw + proxy_rand', data = sp.633))
+summary(lm(formula = 'PM25 ~ PM25_raw + proxy_rand', data = bk.633))
+
+ggplot() + 
+  geom_point(data = sp.633, aes(x = proxy_rand, y = PM25, color = 'cyan2')) +
+  geom_point(data = sp.633, aes(x = PM25_raw, y = PM25, color = 'cyan4')) +
+  geom_point(data = bk.633, aes(x = proxy_rand, y = PM25, color = 'orange')) +
+  geom_point(data = bk.633, aes(x = PM25_raw, y = PM25, color = 'orange3')) +
+  labs(title = 'Predictors of Calibrated PM2.5 (AQY 633)', x = 'Proxy or Raw PM2.5 (ug/m3)', y = 'Calibrated PM2.5 (ug/m3') +
+  scale_color_identity(name = 'X-Axis Correlate of Calibrated PM2.5', guide = 'legend', labels = c('SP Proxy', 'SP Raw Sensor', 'BK Proxy', 'BK Raw Sensor'))
+```
+
+### Compare our Values to Aeroqual Values
+
+```{r}
+aq.cv <- read.csv("../aeroqual/2022-01/pse_calvals_2022-01.csv")[,c('ID', 'start_date', 'end_date', 'PM.gain', 'PM.offset')]
+
+pm25.aq.pse <- pm25.3.spr[,c('ID', 'timestamp_pacific', 'PM25.gain', 'PM25.offset', 'PM25_proxy', 'PM25_raw', 'pollutant_aqrh', 'PM25')] %>%
+  inner_join(., aq.cv, by = 'ID') %>%
+  rename('PM25_aqrh'='pollutant_aqrh') %>%
+  filter(timestamp_pacific >= start_date & timestamp_pacific <= end_date) %>%
+  select(-c(start_date, end_date)) %>%
+  mutate(PM25.aq = PM.gain*(PM25_aqrh - PM.offset))
+
+rmse(pm25.aq.pse$PM25_proxy, pm25.aq.pse$PM25)
+rmse(pm25.aq.pse$PM25_proxy, pm25.aq.pse$PM25.aq)
+
+pm25.aq.pse.633 <- filter(pm25.aq.pse, ID == 'AQY BB-633')
+rmse(pm25.aq.pse.633$PM25_proxy, pm25.aq.pse.633$PM25)
+rmse(pm25.aq.pse.633$PM25_proxy, pm25.aq.pse.633$PM25.aq)
+
+pm25.aq.pse.642 <- filter(pm25.aq.pse, ID == 'AQY BB-642')
+rmse(pm25.aq.pse.642$PM25_proxy, pm25.aq.pse.642$PM25)
+rmse(pm25.aq.pse.642$PM25_proxy, pm25.aq.pse.642$PM25.aq)
+
+```
+
+```{r}
+pse.cal <- lm('PM25_proxy ~ PM25.offset + PM25.gain*PM25_raw', data = pm25.aq.pse)
+aq.cal <- lm('PM25_proxy ~ PM25.gain*(PM25_aqrh - PM25.offset)', data = pm25.aq.pse)
+
+AIC(pse.cal, aq.cal)
+
+pse.cal.633 <- lm('PM25_proxy ~ PM25.offset + PM25.gain*PM25_raw', data = pm25.aq.pse.633)
+aq.cal.633 <- lm('PM25_proxy ~ PM25.gain*(PM25_aqrh - PM25.offset)', data = pm25.aq.pse.633)
+
+AIC(pse.cal.633, aq.cal.633)
+
+pse.cal.642 <- lm('PM25_proxy ~ PM25.offset + PM25.gain*PM25_raw', data = pm25.aq.pse.642)
+aq.cal.642 <- lm('PM25_proxy ~ PM25.gain*(PM25_aqrh - PM25.offset)', data = pm25.aq.pse.642)
+
+AIC(pse.cal.642, aq.cal.642)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
